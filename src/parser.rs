@@ -52,6 +52,11 @@ pub mod parser {
         // read version number
         file.read_exact(&mut two_bytes)?;
         mdf.version_num = LittleEndian::read_u16(&two_bytes);
+        if mdf.version_num <= 400 {
+            panic!("unsupported version: {}", mdf.version_num);
+        }
+
+        
         Ok(())
     }
     
