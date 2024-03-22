@@ -1,0 +1,12 @@
+id = "##DG"
+implemented = true
+
+[link]
+dg_dg_next = ["DG"]
+dg_cg_first = ["CG"]
+dg_data = ["DT", "DV", "DZ", "DL", "LD", "HL"]
+dg_md_comment = ["TX", "MD"]
+
+[data]
+dg_rec_id_size = {data_type="UINT8", size=1}
+dg_reserved = {data_type="BYTE", size=7}
