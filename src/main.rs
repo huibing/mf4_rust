@@ -2,6 +2,9 @@ use mf4_parse::block::BlockDesc;
 use std::fs::File;
 use std::io::BufReader;
 
+pub mod parser;
+
+
 
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,9 +26,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:?}", block.get_data_field("dg_rec_id_size").unwrap().get_data_type());
     println!("{:?}", block.get_link_block_type("dg_data").unwrap());
 
-    //let blk_field = block.get_data_field("dg_reserved").unwrap();
-    //let data = b"\x01\x02\x03\x00\x00\x00\x00\x00\xff\xff\x00\x00\x00\x00\x00\x00";
-    //println!("{:?}", blk_field.try_parse_value(&data[..], 16)?);
     assert!(block.check_id(b"##DG"));
     assert!(block.is_implemented());
 

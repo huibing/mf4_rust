@@ -180,7 +180,7 @@ pub mod block {  // utility struct and functions for parsing mdf block data
             }
         }
         
-        pub fn check_id(&self, id: &[u8;4]) -> bool {
+        pub fn check_id(&self, id: &[u8]) -> bool {
             let id_array = self.id.as_bytes();
             id_array == id
         }
