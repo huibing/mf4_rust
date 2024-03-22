@@ -113,7 +113,7 @@ pub mod block {  // utility struct and functions for parsing mdf block data
         }
     }
 
-    #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
     pub enum DataValue {
         CHAR(String),
         BYTE(Vec<u8>),
@@ -133,7 +133,7 @@ pub mod block {  // utility struct and functions for parsing mdf block data
         BYTE,
         UINT64,
         UINT8,
-        INT16,
+        INT16, 
         UINT16,
         INT32,
         UINT32,
@@ -256,52 +256,67 @@ pub mod block {  // utility struct and functions for parsing mdf block data
         pub links: IndexMap<String, u64>,
         pub data: IndexMap<String, DataValue>,
     }
+
+    impl BlockInfo {
+        pub fn get_link_offset(&self, link_name: &str) -> Option<u64> {
+            Some(self.links.get(link_name)?.clone())
+        }
+
+        pub fn get_data_value(&self, data_name: &str) -> Option<&DataValue> {
+            Some(self.data.get(data_name)?)
+        }
+    }
 }
 
 
 #[cfg(test)]
 pub mod test_block {
     use crate::block::*;
-    use std::{fs::File, io::BufReader};
+    use std::{fs::{self, File}, io::{BufReader, Write}};
+    use rust_embed::RustEmbed;
+
+    #[derive(RustEmbed)]
+    #[folder = "test/"]
+    #[prefix = "test/"]
+    struct Asset;
 
     #[test]
     fn test_block_parse() {
-        let toml_content = r####"  
-        id = "##DG"
-        implemented = true
-        [link]
-        dg_dg_next = ["DG"]
-        dg_cg_first = ["CG"]
-        dg_data = ["DT", "DV", "DZ", "DL", "LD", "HL"]
-        dg_md_comment = ["TX", "MD"]
-        [data]
-        dg_rec_id_size = {data_type="UINT8", size=1}
-        dg_reserved = {data_type="BYTE", size=7}
-        "####;
-        let block: BlockDesc = toml::from_str(toml_content).unwrap();
-        let file = File::open("./test/test_mdf.mf4").unwrap();
+        let dg_toml_file = Asset::get("test/dg.toml").unwrap();
+        let toml_str = String::from_utf8(dg_toml_file.data.as_ref().to_vec()).unwrap();
+        let block: BlockDesc = toml::from_str(toml_str.as_str()).unwrap();
+        let file_data = Asset::get("test/test_mdf.mf4").unwrap();
+        let mut new_file = File::create("temp.mf4").unwrap();
+        new_file.write(file_data.data.as_ref()).unwrap();
+        let file = File::open("temp.mf4").unwrap();
         let mut buf = BufReader::new(file);
-        let block_info = block.try_parse_buf(&mut buf, 992).unwrap();
+        let block_info = block.try_parse_buf(&mut buf, 992).unwrap();  // one DG block starts at offset 992 in test_mdf.mf4 file
         assert_eq!(block_info.links.len(), 4);
         assert_eq!(block_info.data.len(), 2);
         assert_eq!(block_info.links.get("dg_dg_next").unwrap(), &0);
         assert_eq!(block_info.links.get("dg_cg_first").unwrap(), &888);
         assert_eq!(block_info.links.get("dg_data").unwrap(), &1736);
+        assert_eq!(block_info.get_link_offset("dg_dg_next").unwrap(), 0);
+        assert_eq!(block_info.get_link_offset("dg_cg_first").unwrap(), 888);
+        assert_eq!(block_info.get_link_offset("dg_data").unwrap(), 1736);
 
         let data_value = block_info.data.get("dg_rec_id_size").unwrap();
         if let DataValue::UINT8(vec) = data_value {
             assert_eq!(vec.len(), 1);
             assert_eq!(vec[0], 0);
         } else {
-            assert!(false);
+            assert!(false, "data value is not UINT8");
         }
         let data_value = block_info.data.get("dg_reserved").unwrap();
         if let DataValue::BYTE(vec) = data_value {
             assert_eq!(vec.len(), 7);
             assert_eq!(vec, &vec![0;7]);
         } else {
-            assert!(false);
+            assert!(false, "data value is not BYTE");
         }
 
+        assert_eq!(block_info.get_data_value("dg_rec_id_size1"), None);
+        assert_eq!(block_info.get_data_value("dg_rec_id_size").unwrap(), &DataValue::UINT8(vec![0]));
+        fs::remove_file("temp.mf4").unwrap();
     }
 }
