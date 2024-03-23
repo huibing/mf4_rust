@@ -1,0 +1,7 @@
+id = "##MD"
+implemented = true
+
+[link]
+
+[data]
+tx_data = {data_type="CHAR"}   # change from BYTE to CHAR

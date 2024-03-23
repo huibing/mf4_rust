@@ -1,4 +1,4 @@
-pub mod block {  // utility struct and functions for parsing mdf block data
+pub mod block {  // utility struct and functions for parsing mdf block link and data
     use serde::{Deserialize, Serialize};
     use toml::Value;
     use byteorder::{ByteOrder, LittleEndian};
@@ -32,23 +32,29 @@ pub mod block {  // utility struct and functions for parsing mdf block data
             let size:usize = self.size.unwrap_or(1).try_into().unwrap();  // convert to usize for later convience
             match self.data_type {
                 DataType::CHAR => {
-                    let mut byte_buf = vec![0u8;size];
+                    let size:usize;
+                    if self.size.is_none() {
+                        size = cur.get_ref().len() - cur.position() as usize;
+                    } else {
+                        size = self.size.unwrap() as usize;
+                    }
+                    let mut byte_buf: Vec<u8> = vec![0u8;size];
                     cur.read_exact(&mut byte_buf)?;
-                    Ok(DataValue::CHAR(String::from_utf8(byte_buf)?))   // might be wrong, asam manual says that BYTE data is encoded in ISO-8859-1
+                    Ok(DataValue::CHAR(String::from_utf8(byte_buf)?))   // might be wrong, asam manual says that CHAR data is encoded in ISO-8859-1
                 },
                 DataType::UINT8 => {
-                    let mut byte_buf = vec![0u8;size];
+                    let mut byte_buf: Vec<u8> = vec![0u8;size];
                     cur.read_exact(&mut byte_buf)?;
                     Ok(DataValue::UINT8(byte_buf))
                 },
                 DataType::BYTE => {
-                    let mut byte_buf = vec![0u8;size];
+                    let mut byte_buf: Vec<u8> = vec![0u8;size];
                     cur.read_exact(&mut byte_buf)?;
                     Ok(DataValue::BYTE(byte_buf))
                 },
                 DataType::UINT64 => {
                     let mut res: Vec<u64> = Vec::new();
-                    let mut eight_bytes_buf = [0u8;8];
+                    let mut eight_bytes_buf: [u8; 8] = [0u8;8];
                     (0..size).into_iter().for_each(|_| {
                         cur.read_exact(&mut eight_bytes_buf).unwrap();
                         res.push(LittleEndian::read_u64(&eight_bytes_buf));
@@ -57,7 +63,7 @@ pub mod block {  // utility struct and functions for parsing mdf block data
                 },
                 DataType::INT16 => {
                     let mut res: Vec<i16> = Vec::new();
-                    let mut two_byte_buf = [0u8;2];
+                    let mut two_byte_buf: [u8; 2] = [0u8;2];
                     (0..size).into_iter().for_each(|_| {
                         cur.read_exact(&mut two_byte_buf).unwrap();
                         res.push(LittleEndian::read_i16(&two_byte_buf));
@@ -75,7 +81,7 @@ pub mod block {  // utility struct and functions for parsing mdf block data
                 },
                 DataType::INT32 => {
                     let mut res: Vec<i32> = Vec::new();
-                    let mut buf = [0u8;4];
+                    let mut buf: [u8; 4] = [0u8;4];
                     (0..size).into_iter().for_each(|_| {
                         cur.read_exact(&mut buf).unwrap();
                         res.push(LittleEndian::read_i32(&buf));
@@ -84,7 +90,7 @@ pub mod block {  // utility struct and functions for parsing mdf block data
                 },
                 DataType::UINT32 => {
                     let mut res: Vec<u32> = Vec::new();
-                    let mut buf = [0u8;4];
+                    let mut buf: [u8; 4] = [0u8;4];
                     (0..size).into_iter().for_each(|_| {
                         cur.read_exact(&mut buf).unwrap();
                         res.push(LittleEndian::read_u32(&buf));
@@ -93,7 +99,7 @@ pub mod block {  // utility struct and functions for parsing mdf block data
                 },
                 DataType::INT64 => {
                     let mut res: Vec<i64> = Vec::new();
-                    let mut buf = [0u8;8];
+                    let mut buf: [u8; 8] = [0u8;8];
                     (0..size).into_iter().for_each(|_| {
                         cur.read_exact(&mut buf).unwrap();
                         res.push(LittleEndian::read_i64(&buf));
@@ -102,7 +108,7 @@ pub mod block {  // utility struct and functions for parsing mdf block data
                 },
                 DataType::REAL => {
                     let mut res: Vec<f64> = Vec::new();
-                    let mut buf = [0u8;8];
+                    let mut buf: [u8; 8] = [0u8;8];
                     (0..size).into_iter().for_each(|_| {
                         cur.read_exact(&mut buf).unwrap();
                         res.push(LittleEndian::read_f64(&buf));
@@ -221,13 +227,13 @@ pub mod block {  // utility struct and functions for parsing mdf block data
                     data: IndexMap::new()
                 };
                 // read 20 more bytes
-                let mut data_buf = [0u8;20];
+                let mut data_buf: [u8; 20] = [0u8;20];
                 buf.read_exact(&mut data_buf).unwrap();
                 // parse length and link count
                 let blk_len = LittleEndian::read_u64(&data_buf[4..12]);
                 let link_count: u64 = LittleEndian::read_u64(&data_buf[12..20]);
                 // decide to read how many bytes using blk_len
-                let mut vec_buf = vec![0u8;blk_len as usize -24];
+                let mut vec_buf: Vec<u8> = vec![0u8;blk_len as usize -24];
                 buf.read_exact(&mut vec_buf).unwrap();
                 let mut cur = Cursor::new(&vec_buf);
                 if link_count > 0 {

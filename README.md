@@ -19,6 +19,13 @@ rust 语言编写的mf4读取库
 ```shell
     cargo install rust_mf4
 ```
+or
+```toml
+    [dependencies]
+    rust_mf4 = "0.1"
+```
+        
+
 
 ## 使用
 
