@@ -10,7 +10,7 @@ pub mod block {  // utility struct and functions for parsing mdf block data
     #[derive(Serialize, Deserialize, Debug)]
     pub struct BlockField {
         data_type: DataType,
-        size: Option<u32>,
+        size: Option<u32>,   //TODO: if NONE, means size is variable
     }
     impl BlockField {
         pub fn get_data_type(&self) -> String {
@@ -285,20 +285,17 @@ pub mod test_block {
         let dg_toml_file = Asset::get("test/dg.toml").unwrap();
         let toml_str = String::from_utf8(dg_toml_file.data.as_ref().to_vec()).unwrap();
         let block: BlockDesc = toml::from_str(toml_str.as_str()).unwrap();
-        let file_data = Asset::get("test/test_mdf.mf4").unwrap();
+        let file_data = Asset::get("test/1.mf4").unwrap();
         let mut new_file = File::create("temp.mf4").unwrap();
         new_file.write(file_data.data.as_ref()).unwrap();
         let file = File::open("temp.mf4").unwrap();
         let mut buf = BufReader::new(file);
-        let block_info = block.try_parse_buf(&mut buf, 992).unwrap();  // one DG block starts at offset 992 in test_mdf.mf4 file
+        let block_info = block.try_parse_buf(&mut buf, 0x8db0).unwrap();  // one DG block starts at offset 992 in test_mdf.mf4 file
         assert_eq!(block_info.links.len(), 4);
         assert_eq!(block_info.data.len(), 2);
-        assert_eq!(block_info.links.get("dg_dg_next").unwrap(), &0);
-        assert_eq!(block_info.links.get("dg_cg_first").unwrap(), &888);
-        assert_eq!(block_info.links.get("dg_data").unwrap(), &1736);
-        assert_eq!(block_info.get_link_offset("dg_dg_next").unwrap(), 0);
-        assert_eq!(block_info.get_link_offset("dg_cg_first").unwrap(), 888);
-        assert_eq!(block_info.get_link_offset("dg_data").unwrap(), 1736);
+        assert_eq!(block_info.get_link_offset("dg_dg_next").unwrap(), 36144);
+        assert_eq!(block_info.get_link_offset("dg_cg_first").unwrap(), 25600);
+        assert_eq!(block_info.get_link_offset("dg_data").unwrap(), 49712);
 
         let data_value = block_info.data.get("dg_rec_id_size").unwrap();
         if let DataValue::UINT8(vec) = data_value {

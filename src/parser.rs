@@ -4,7 +4,9 @@ pub mod parser {
     use std::io::{BufReader, Seek, Read, SeekFrom};
     use std::path::PathBuf;
     use std::fs::File;
+    use std::str::FromStr;
     use byteorder::{LittleEndian, ByteOrder};
+    use std::collections::HashMap;
 
 
     #[derive(RustEmbed)]
@@ -24,6 +26,28 @@ pub mod parser {
                 version_num: 410,
             }
         }
+    }
+
+    lazy_static! {
+        static ref DESC_MAP: HashMap<String, BlockDesc> = {
+            let mut m = HashMap::new();
+            let block_types = ["DG", "HD"];
+            block_types.into_iter().for_each(|key| {
+                let key_str = String::from_str(key).unwrap();
+                let desc = parse_toml(key_str.to_lowercase().as_str()).unwrap();
+                m.insert(key_str, desc);
+            });
+            m
+        };
+    }
+
+    pub fn get_block_desc(file: &mut BufReader<File>, offset: u64) -> Result<&BlockDesc, Box<dyn std::error::Error>>{
+        //use file offset to acquire the actual block type and its block desc
+        let mut buf = [0u8;4];
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(&mut buf)?;
+        let block_type = String::from_utf8(buf[2..].to_vec())?;
+        Ok(DESC_MAP.get(&block_type).unwrap())
     }
 
     pub fn parse_toml(block_name: &str) -> Result<BlockDesc, Box<dyn std::error::Error>> {
@@ -53,10 +77,8 @@ pub mod parser {
         file.read_exact(&mut two_bytes)?;
         mdf.version_num = LittleEndian::read_u16(&two_bytes);
         if mdf.version_num <= 400 {
-            panic!("unsupported version: {}", mdf.version_num);
+            panic!("unsupported version: {}", mdf.version_num);   // do not support any version below 4.00
         }
-
-        
         Ok(())
     }
     
@@ -77,11 +99,19 @@ pub mod parser_test {
 
     #[test]
     fn test_parse_mdf_id_block() {
-        let file = std::fs::File::open("test/test_mdf.mf4").unwrap();
+        let file = std::fs::File::open("test/1.mf4").unwrap();
         let mut buf = BufReader::new(file);
         let mut mdf = MdfInfo::new(); 
         parse_mdf_id_block(&mut buf, &mut mdf).unwrap();
         assert_eq!(mdf.version, "4.10".to_string());
         assert_eq!(mdf.version_num, 410);
+    }
+
+    #[test]
+    fn test_get_block_desc() {
+        let file = std::fs::File::open("test/1.mf4").unwrap();
+        let mut buf = BufReader::new(file);
+        let block = get_block_desc(&mut buf, 0x8db0).unwrap();
+        assert!(block.check_id("##DG".as_bytes()));
     }
 }

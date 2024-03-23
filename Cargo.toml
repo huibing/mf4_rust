@@ -13,4 +13,5 @@ byteorder = "1.5.0"
 indexmap = "2.2.5"
 rust-embed = "8.3.0"
 include_dir = "0.7.3"
+lazy_static = "1.4.0"
 

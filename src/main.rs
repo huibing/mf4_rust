@@ -2,6 +2,9 @@ use mf4_parse::block::BlockDesc;
 use std::fs::File;
 use std::io::BufReader;
 
+#[macro_use]
+extern crate lazy_static;
+
 pub mod parser;
 
 
@@ -29,9 +32,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(block.check_id(b"##DG"));
     assert!(block.is_implemented());
 
-    let file = File::open("./test_mdf.mf4")?;
+    let file = File::open("./test/1.mf4")?;
     let mut buf = BufReader::new(file);   // offset 992   0x3e0
-    let offset = 992;
+    let offset = 0x8db0;
     println!("{:?}", block.try_parse_buf(&mut buf, offset).unwrap());
     Ok(())
 }
