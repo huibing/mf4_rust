@@ -43,18 +43,18 @@ pub mod parser {
 
     pub fn get_block_desc(file: &mut BufReader<File>, offset: u64) -> Result<&BlockDesc, Box<dyn std::error::Error>>{
         //use file offset to acquire the actual block type and its block desc
-        let mut buf = [0u8;4];
+        let mut buf: [u8; 4] = [0u8;4];
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(&mut buf)?;
-        let block_type = String::from_utf8(buf[2..].to_vec())?;
+        let block_type: String = String::from_utf8(buf[2..].to_vec())?;
         Ok(DESC_MAP.get(&block_type).unwrap())
     }
 
     pub fn parse_toml(block_name: &str) -> Result<BlockDesc, Box<dyn std::error::Error>> {
-        let mut path = PathBuf::from("config/");
+        let mut path: PathBuf = PathBuf::from("config/");
         path.push(block_name);
         path.set_extension("toml");
-        let toml_file = Asset::get(path.to_str().ok_or("")?).ok_or("")?;
+        let toml_file: rust_embed::EmbeddedFile = Asset::get(path.to_str().ok_or("")?).ok_or("")?;
         Ok(toml::from_str(std::str::from_utf8(toml_file.data.as_ref())?)?)
     }
 
@@ -113,5 +113,7 @@ pub mod parser_test {
         let mut buf = BufReader::new(file);
         let block = get_block_desc(&mut buf, 0x8db0).unwrap();
         assert!(block.check_id("##DG".as_bytes()));
+        let block = get_block_desc(&mut buf, 0x40).unwrap();
+        assert!(block.check_id("##HD".as_bytes()));
     }
 }
