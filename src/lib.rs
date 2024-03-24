@@ -147,7 +147,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
         REAL,   // double precision float 
     }
 
-    #[derive(Serialize, Deserialize, Debug)]
+    #[derive(Serialize, Deserialize, Debug, Clone)]
     pub struct BlockDesc {
         id: String,
         implemented: Option<bool>,   // if None, means implemented by default

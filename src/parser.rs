@@ -41,8 +41,11 @@ pub mod parser {
         };
     }
 
-    pub fn get_block_desc(file: &mut BufReader<File>, offset: u64) -> Result<&BlockDesc, Box<dyn std::error::Error>>{
+    pub fn get_block_desc<'a>(file: &'a mut BufReader<File>, offset: u64) -> Result<&'static BlockDesc, Box<dyn std::error::Error>>{
         //use file offset to acquire the actual block type and its block desc
+        if offset == 0 {
+            return Err("Invalid offset".into());
+        }
         let mut buf: [u8; 4] = [0u8;4];
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(&mut buf)?;
@@ -79,6 +82,16 @@ pub mod parser {
         if mdf.version_num <= 400 {
             panic!("unsupported version: {}", mdf.version_num);   // do not support any version below 4.00
         }
+        file.seek(SeekFrom::Current(30))?; // skip 30 bytes
+        file.read_exact(&mut two_bytes)?; //id_unfin_flags
+        file.read_exact(&mut two_bytes)?; //id_custom_unfin_flags
+        let offset = file.stream_position().unwrap();
+        assert_eq!(offset, 0x40);
+        //parse header HD block
+        let block: &BlockDesc = get_block_desc(file, 0x40)?;
+        let header_info: BlockInfo = block.try_parse_buf(file, offset).unwrap();
+        //let fisrt_dg_offset = header_info.get_link_offset("hd_dg_first");
+
         Ok(())
     }
     
