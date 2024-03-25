@@ -1,0 +1,34 @@
+id = "##CN"
+implemented = true
+
+[link]
+cn_cn_next = ["CN"]
+cn_composition = ["CN", "CA"]
+cn_tx_name = ["TX", "SI", "MD"]
+cn_si_source = ["SI"]
+cn_cc_conversion = ["CC"]
+cn_data = ["SD", "DZ", "CG", "AT", "CN", "EV"]
+cn_md_unit = ["MD", "TX"]
+cn_md_comment = ["MD", "TX"]
+cn_at_reference = ["AT"]
+cn_default_x = ["CN", "CG", "DG"]
+
+
+[data]
+cn_type = {data_type="UINT8", size=1}
+cn_sync_type = {data_type="UINT8", size=1}
+cn_data_type = {data_type="UINT8", size=1}
+cn_bit_offset = {data_type="UINT8", size=1}
+cn_byte_offset = {data_type="UINT32", size=1}
+cn_bit_count = {data_type="UINT32", size=1}
+cn_flags = {data_type="UINT32", size=1}
+cn_inval_bit_pos = {data_type="UINT32", size=1}
+cn_precision = {data_type="UINT8", size=1}
+cn_reserved = {data_type="BYTE", size=1}
+cn_attachment_count = {data_type="UINT16", size=1}
+cn_val_range_min = {data_type="REAL", size=1}
+cn_val_range_max = {data_type="REAL", size=1}
+cn_limit_min = {data_type="REAL", size=1}
+cn_limit_max = {data_type="REAL", size=1}
+cn_limit_ext_min = {data_type="REAL", size=1}
+cn_limit_ext_max = {data_type="REAL", size=1}

@@ -16,7 +16,7 @@ pub mod parser {
     struct Asset;   // compile config file asset to binary
 
 
-    pub struct MdfInfo {
+    pub struct MdfInfo {  //  information that stored in mdf ID and HD block
         pub version: String,
         pub version_num: u16,
         pub time_stamp: u64,
@@ -182,9 +182,9 @@ pub mod parser_test {
         for blk in link_list.iter() {
             println!("{:?}", blk);
         }
-        // get the children of second dg 
+        // get the children of first dg 
         let cg_list = get_child_link_list(&mut buf,
-             link_list[1].get_link_offset("dg_cg_first").unwrap(), "CG").unwrap();
+             link_list[0].get_link_offset("dg_cg_first").unwrap(), "CG").unwrap();
             
         println!("Total CG count: {}", cg_list.len());
         for cg in cg_list.iter() {

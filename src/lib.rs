@@ -314,7 +314,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 println!("Invalid block id");     // TODO: debug info  put into logger
                 return Err("Invalid block id".into());
             } else {
-                let mut blk_info = BlockInfo {
+                let mut blk_info: BlockInfo = BlockInfo {
                     links: IndexMap::new(),
                     data: IndexMap::new()
                 };
@@ -329,12 +329,13 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 buf.read_exact(&mut vec_buf).unwrap();
                 let mut cur = Cursor::new(&vec_buf);
                 if link_count > 0 {
-                    let mut link_buf = [0u8;8];   // link are 8 bytes long 
+                    let mut link_buf: [u8; 8] = [0u8;8];   // link are 8 bytes long 
                     // it is very important that link fields are ordered just like in toml file
-                    for lname in self.get_link_fields().unwrap() { 
+                    for (lname, _) in self.get_link_fields().unwrap().iter().zip(0..link_count) { 
+                        //zip to make sure not to exceed link count, toml config has some link are OPTIONAL
                         cur.read_exact(&mut link_buf).unwrap();
                         let link_offset = LittleEndian::read_u64(&link_buf);
-                        blk_info.links.insert(lname.clone(), link_offset);
+                        blk_info.links.insert((*lname).clone(), link_offset);
                     }
                 }
                 // read parse data using datafield's try_parse_value method
