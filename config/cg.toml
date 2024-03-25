@@ -1,0 +1,19 @@
+id = "##CG"
+implemented = true
+
+[link]
+cg_cg_next = ["CG"]
+cg_cn_first = ["CN"]
+cg_tx_acq_name = ["TX"]
+cg_si_acq_source = ["SI"]
+cg_md_comment = ["MD", "TX"]
+cg_cg_master = [""]
+
+[data]
+cg_record_id = {data_type="UINT64", size=1}
+cg_cycle_count = {data_type="UINT64", size=1}
+cg_flags = {data_type="UINT16", size=1}
+cg_path_separator = {data_type="UINT16", size=1}
+cg_reserved = {data_type="BYTE", size=4}
+cg_data_bytes = {data_type="UINT32", size=1}
+cg_inval_bytes = {data_type="UINT32", size=1}

@@ -7,6 +7,7 @@ pub mod parser {
     use std::str::FromStr;
     use byteorder::{LittleEndian, ByteOrder};
     use std::collections::HashMap;
+    use chrono::DateTime;
 
 
     #[derive(RustEmbed)]
@@ -14,9 +15,13 @@ pub mod parser {
     #[prefix = "config/"]
     struct Asset;   // compile config file asset to binary
 
+
     pub struct MdfInfo {
         pub version: String,
         pub version_num: u16,
+        pub time_stamp: u64,
+        pub date_time: String,
+        pub first_dg_offset: u64,
     }
 
     impl MdfInfo {
@@ -24,6 +29,9 @@ pub mod parser {
             MdfInfo {
                 version: "4.10".to_string(),
                 version_num: 410,
+                time_stamp: 0u64,
+                date_time: "".to_string(),
+                first_dg_offset: 0u64,
             }
         }
     }
@@ -31,7 +39,7 @@ pub mod parser {
     lazy_static! {
         static ref DESC_MAP: HashMap<String, BlockDesc> = {
             let mut m = HashMap::new();
-            let block_types = ["DG", "HD"];
+            let block_types = ["DG", "HD", "CG"];
             block_types.into_iter().for_each(|key| {
                 let key_str = String::from_str(key).unwrap();
                 let desc = parse_toml(key_str.to_lowercase().as_str()).unwrap();
@@ -61,7 +69,7 @@ pub mod parser {
         Ok(toml::from_str(std::str::from_utf8(toml_file.data.as_ref())?)?)
     }
 
-    pub fn parse_mdf_id_block(file: &mut BufReader<File>, mdf: &mut MdfInfo) -> Result<(), Box<dyn std::error::Error>>{
+    pub fn parse_mdf_header(file: &mut BufReader<File>, mdf: &mut MdfInfo) -> Result<(), Box<dyn std::error::Error>>{
         // manually parse id block
         file.seek(SeekFrom::Start(0))?;
         let mut buf = [0u8;8];
@@ -89,12 +97,41 @@ pub mod parser {
         assert_eq!(offset, 0x40);
         //parse header HD block
         let block: &BlockDesc = get_block_desc(file, 0x40)?;
-        let header_info: BlockInfo = block.try_parse_buf(file, offset).unwrap();
-        //let fisrt_dg_offset = header_info.get_link_offset("hd_dg_first");
-
+        let header_info: BlockInfo = block.try_parse_buf(file, offset)?;
+        let fisrt_dg_offset: u64 = header_info.get_link_offset("hd_dg_first").unwrap();
+        assert!(fisrt_dg_offset > 0);
+        //parse time stamp
+        let time_stamp_v = header_info.get_data_value("hd_start_time_ns").unwrap();
+        let t: Vec<u64> = time_stamp_v.clone().try_into().unwrap();
+        let dt = DateTime::from_timestamp_nanos(t[0] as i64);
+        mdf.time_stamp = t[0];
+        mdf.date_time = dt.format("%Y-%m-%d %H:%M:%S%.9f").to_string();
+        mdf.first_dg_offset = fisrt_dg_offset;       
         Ok(())
     }
     
+    pub fn get_child_link_list(file: &mut BufReader<File>, first_child_offset: u64, block_type: &'static str) 
+        -> Result<Vec<BlockInfo>, Box<dyn std::error::Error>> {
+        let mut link_list: Vec<BlockInfo> = Vec::new();
+        let blk_str: String = block_type.to_lowercase();
+        let block_desc: &BlockDesc = DESC_MAP.get(block_type).unwrap();
+        let link_name = format!("{0}_{0}_next", blk_str);   // there is a pattern for CN CG DG link-list
+        let mut cursor = first_child_offset;
+        let mut counter = 0;
+        loop {
+            let blk: BlockInfo = block_desc.try_parse_buf(file, cursor)?;
+            cursor = blk.get_link_offset(link_name.as_str()).unwrap();
+            link_list.push(blk);
+            if cursor == 0 {
+                break;
+            }
+            counter += 1; 
+            if counter > 1000 {
+                panic!("too many blocks in list at offset: {}", first_child_offset);
+            }
+        }
+        Ok(link_list)
+    }
 
 }
 
@@ -111,13 +148,16 @@ pub mod parser_test {
     }
 
     #[test]
-    fn test_parse_mdf_id_block() {
+    fn test_parse_mdf_header() {
         let file = std::fs::File::open("test/1.mf4").unwrap();
         let mut buf = BufReader::new(file);
         let mut mdf = MdfInfo::new(); 
-        parse_mdf_id_block(&mut buf, &mut mdf).unwrap();
+        parse_mdf_header(&mut buf, &mut mdf).unwrap();
         assert_eq!(mdf.version, "4.10".to_string());
         assert_eq!(mdf.version_num, 410);
+        assert_eq!(mdf.first_dg_offset, 0x8db0);
+        let block = get_block_desc(&mut buf, mdf.first_dg_offset).unwrap();
+        assert!(block.check_id("##DG".as_bytes()));
     }
 
     #[test]
@@ -128,5 +168,27 @@ pub mod parser_test {
         assert!(block.check_id("##DG".as_bytes()));
         let block = get_block_desc(&mut buf, 0x40).unwrap();
         assert!(block.check_id("##HD".as_bytes()));
+    }
+
+    #[test]
+    fn test_get_child_link_list() {
+        let file: std::fs::File = std::fs::File::open("test/1.mf4").unwrap();
+        let mut buf: BufReader<std::fs::File> = BufReader::new(file);
+        let mut mdf: MdfInfo = MdfInfo::new();
+        parse_mdf_header(&mut buf, &mut mdf).unwrap();
+        let link_list: Vec<mf4_parse::block::BlockInfo> = get_child_link_list(&mut buf, 
+                                                                mdf.first_dg_offset, "DG").unwrap();
+        println!("Total DG count: {}", link_list.len());
+        for blk in link_list.iter() {
+            println!("{:?}", blk);
+        }
+        // get the children of second dg 
+        let cg_list = get_child_link_list(&mut buf,
+             link_list[1].get_link_offset("dg_cg_first").unwrap(), "CG").unwrap();
+            
+        println!("Total CG count: {}", cg_list.len());
+        for cg in cg_list.iter() {
+            println!("{:?}", cg);
+        }
     }
 }

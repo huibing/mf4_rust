@@ -6,6 +6,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
     use std::fs::File;
     use std::io::{Seek, SeekFrom, Read, Cursor};
     use indexmap::IndexMap;
+    use std::convert::{TryInto, TryFrom};
 
     #[derive(Serialize, Deserialize, Debug)]
     pub struct BlockField {
@@ -119,7 +120,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
         }
     }
 
-    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
     pub enum DataValue {
         CHAR(String),
         BYTE(Vec<u8>),
@@ -131,6 +132,97 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
         UINT32(Vec<u32>), 
         INT64(Vec<i64>),
         REAL(Vec<f64>),
+    }
+
+    impl TryFrom<DataValue> for String {
+        type Error = &'static str;
+        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+            match value {
+                DataValue::CHAR(s) => Ok(s),
+                _ => Err("DataValue is not a CHAR")
+            }
+        }
+    }
+
+    impl TryFrom<DataValue> for Vec<u8> {
+        type Error = &'static str;
+        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+            match value {
+                DataValue::BYTE(s) => Ok(s),
+                DataValue::UINT8(s) => Ok(s),
+                _ => Err("DataValue is not a uint8 or byte")
+            }
+        }
+    }
+
+    impl TryFrom<DataValue> for Vec<u64> {
+        type Error = &'static str;
+        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+            match value {
+                DataValue::UINT64(s) => Ok(s),
+                _ => Err("DataValue is not a uint64")
+            }
+        }
+    }
+
+    impl TryFrom<DataValue> for Vec<i16> {
+        type Error = &'static str;
+        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+            match value {
+                DataValue::INT16(s) => Ok(s),
+                _ => Err("DataValue is not a int16")
+            }
+        }
+    }
+
+    impl TryFrom<DataValue> for Vec<u16> {
+        type Error = &'static str;
+        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+            match value {
+                DataValue::UINT16(s) => Ok(s),
+                _ => Err("DataValue is not a uint16")
+            }
+        }
+    }
+
+    impl TryFrom<DataValue> for Vec<i32> {
+        type Error = &'static str;
+        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+            match value {
+                DataValue::INT32(s) => Ok(s),
+                _ => Err("DataValue is not a int32")
+            }
+        }
+    }
+
+    impl TryFrom<DataValue> for Vec<u32> {
+        type Error = &'static str;
+        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+            match value {
+                DataValue::UINT32(s) => Ok(s),
+                _ => Err("DataValue is not a uint32")
+            }
+        }
+    }
+
+    impl TryFrom<DataValue> for Vec<i64> {
+        type Error = &'static str;
+        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+            match value {
+                DataValue::INT64(s) => Ok(s),
+                _ => Err("DataValue is not a int64")
+            }
+        }
+    }
+
+    impl TryFrom<DataValue> for Vec<f64> {
+        type Error = &'static str;
+        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+            match value {
+                DataValue::REAL(s) => Ok(s),
+                _ => Err("DataValue is not a float64")
+            }
+        }
     }
 
     #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -270,6 +362,10 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
 
         pub fn get_data_value(&self, data_name: &str) -> Option<&DataValue> {
             Some(self.data.get(data_name)?)
+        }
+
+        pub fn get_data_value_copy(&self, data_name: &str) -> Option<DataValue> {
+            Some(self.data.get(data_name)?.clone())
         }
     }
 }
