@@ -7,7 +7,7 @@ cg_cn_first = ["CN"]
 cg_tx_acq_name = ["TX"]
 cg_si_acq_source = ["SI"]
 cg_md_comment = ["MD", "TX"]
-cg_cg_master = ["LD", "DV"]
+cg_cg_master = ["LD", "DV"] # optional
 
 [data]
 cg_record_id = {data_type="UINT64", size=1}

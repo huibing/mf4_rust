@@ -2,11 +2,6 @@ use mf4_parse::block::BlockDesc;
 use std::fs::File;
 use std::io::BufReader;
 
-#[macro_use]
-extern crate lazy_static;
-
-pub mod parser;
-
 
 
 

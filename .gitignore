@@ -3,3 +3,4 @@ Cargo.lock
 *.mf4
 *.mdf
 *.dat
+.vscode

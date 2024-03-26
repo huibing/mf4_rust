@@ -10,8 +10,8 @@ cn_cc_conversion = ["CC"]
 cn_data = ["SD", "DZ", "CG", "AT", "CN", "EV"]
 cn_md_unit = ["MD", "TX"]
 cn_md_comment = ["MD", "TX"]
-cn_at_reference = ["AT"]     # this field is variable-size  
-cn_default_x = ["CN", "CG", "DG"]   # this field is optional depends on cn_flags (3 or 0)
+#cn_at_reference = ["AT"]     # this field is variable-size  its size depends on cn_attachment_count
+#cn_default_x = ["CN", "CG", "DG"]   # this field is optional(3 or 0)  depends on cn_flags bit 12
 
 
 [data]
