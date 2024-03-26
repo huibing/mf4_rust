@@ -39,11 +39,10 @@ pub mod parser {
     lazy_static! {
         static ref DESC_MAP: HashMap<String, BlockDesc> = {
             let mut m = HashMap::new();
-            let block_types = ["DG", "HD", "CG"];
+            let block_types = ["DG", "HD", "CG", "TX", "MD", "CN"];
             block_types.into_iter().for_each(|key| {
-                let key_str = String::from_str(key).unwrap();
-                let desc = parse_toml(key_str.to_lowercase().as_str()).unwrap();
-                m.insert(key_str, desc);
+                let desc = parse_toml(key.to_lowercase().as_str()).unwrap();
+                m.insert(key.to_string(), desc);
             });
             m
         };
@@ -94,12 +93,10 @@ pub mod parser {
         file.read_exact(&mut two_bytes)?; //id_unfin_flags
         file.read_exact(&mut two_bytes)?; //id_custom_unfin_flags
         let offset = file.stream_position().unwrap();
-        assert_eq!(offset, 0x40);
         //parse header HD block
         let block: &BlockDesc = get_block_desc(file, 0x40)?;
         let header_info: BlockInfo = block.try_parse_buf(file, offset)?;
         let fisrt_dg_offset: u64 = header_info.get_link_offset("hd_dg_first").unwrap();
-        assert!(fisrt_dg_offset > 0);
         //parse time stamp
         let time_stamp_v = header_info.get_data_value("hd_start_time_ns").unwrap();
         let t: Vec<u64> = time_stamp_v.clone().try_into().unwrap();
@@ -190,5 +187,16 @@ pub mod parser_test {
         for cg in cg_list.iter() {
             println!("{:?}", cg);
         }
+    }
+
+    #[test]
+    fn test_parse_tx_block() {
+        let file: std::fs::File = std::fs::File::open("test/1.mf4").unwrap();
+        let mut buf: BufReader<std::fs::File> = BufReader::new(file);
+        let block_desc = get_block_desc(&mut buf, 0x8e30).unwrap();
+        println!("{:?}", block_desc);
+        let block_info = block_desc.try_parse_buf(&mut buf, 0x8e30).unwrap();
+        let ss:String = block_info.get_data_value("tx_data").unwrap().to_owned().try_into().unwrap();
+        println!("info:::::::{:?}", ss);
     }
 }
