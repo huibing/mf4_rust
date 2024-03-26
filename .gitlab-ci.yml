@@ -44,6 +44,7 @@ test:cargo:
 #       junit: $CI_PROJECT_DIR/tests/*.xml
 
 deploy:
+  tags: [ rust_mf4_virtualmachine ]
   stage: deploy
   script: echo "Define your deployment script!"
   environment: production
