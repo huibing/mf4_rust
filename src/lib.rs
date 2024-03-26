@@ -461,6 +461,9 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
         pub fn get_data_value_copy(&self, data_name: &str) -> Option<DataValue> {
             Some(self.data.get(data_name)?.clone())
         }
+        pub fn get_id(&self) -> &String {
+            &self.id
+        }
     }
 }
 
@@ -555,7 +558,7 @@ pub mod parser {
         // read version number
         file.read_exact(&mut two_bytes)?;
         mdf.version_num = LittleEndian::read_u16(&two_bytes);
-        if mdf.version_num <= 400 {
+        if mdf.version_num < 400 {
             panic!("unsupported version: {}", mdf.version_num);   // do not support any version below 4.00
         }
         file.seek(SeekFrom::Current(30))?; // skip 30 bytes
@@ -599,6 +602,25 @@ pub mod parser {
         Ok(link_list)
     }
 
+    pub fn cn_get_name(file: &mut BufReader<File>, cn_info: &BlockInfo) -> Result<String, Box<dyn std::error::Error>> {
+        let name_offset = cn_info.get_link_offset_normal("cn_tx_name").unwrap();
+        let desc = get_block_desc(file, name_offset)?;
+        let name_info: BlockInfo = desc.try_parse_buf(file, name_offset)?;
+        match name_info.get_id().as_str() {
+            "##TX" => {
+                let name_v = name_info.get_data_value("tx_data").unwrap();
+                Ok(name_v.clone().try_into().unwrap())
+            },
+            "##MD" => {
+                let name_v = name_info.get_data_value("md_data").unwrap();
+                Ok(name_v.clone().try_into().unwrap())
+            },
+            _ => {
+                Err("unknown CN name block".into())
+            },
+        }   
+    }
+        
 }
 
 #[cfg(test)]
@@ -710,6 +732,7 @@ pub mod parser_test {
         println!("Total CN count: {}", cn_list.len());
         for cn in cn_list.iter() {
             println!("{:?}", cn);
+            println!("CN name: {}", cn_get_name(&mut buf, cn).unwrap());
         }
     }
 
