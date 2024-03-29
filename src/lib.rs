@@ -1,3 +1,4 @@
+pub mod components;
 
 pub mod block {  // utility struct and functions for parsing mdf block link and data
     use serde::{Deserialize, Serialize};
@@ -360,7 +361,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
     pub struct BlockInfo {
         pub links: Vec<u64>,
         pub data: IndexMap<String, DataValue>,
-        id: String,
+        pub id: String,
         link_map: IndexMap<String, LinkAddr>
     }
 
@@ -437,7 +438,31 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                         self.link_map.insert("cn_default_x".to_string(), LinkAddr::Variable(link_vec));
                     }
                     Ok(())
-                }
+                } // ##CN
+                "##CC" => { 
+                    let cc_ref_count: Vec<u16>= self.data.get(&"cc_ref_count".to_string()).unwrap().clone().try_into()?;
+                    let cc_desc = get_block_desc_by_name("CC".to_string()).unwrap();
+                    let cc_link_fields = cc_desc.get_link_fields().ok_or("can not find cc_link_fields")?;
+                    let mut i = 0;
+                    for name in cc_link_fields {
+                        let link_addr = self.links[i];
+                        self.link_map.insert(name.clone(), LinkAddr::Normal(link_addr));
+                        i += 1;
+                    }
+                    if cc_ref_count[0] > 0 {
+                        if i + cc_ref_count[0] as usize > self.links.len() {
+                            return Err("Invalid link count".into());
+                        } else {
+                            let mut link_vec: Vec<u64> = Vec::new();
+                            (0..cc_ref_count[0]).for_each(|_| {
+                                link_vec.push(self.links[i]);
+                                i += 1;
+                            });
+                            self.link_map.insert("cc_ref".to_string(), LinkAddr::Variable(link_vec));
+                        }
+                    }
+                    Ok(())
+                },// these blocks have variable size links
                 id => {// This is the normal case
                     let block_type:String = id[2..].to_string();
                     let block_desc: &BlockDesc = get_block_desc_by_name(block_type).unwrap();
@@ -508,7 +533,7 @@ pub mod parser {
     lazy_static! {
         pub static ref DESC_MAP: HashMap<String, BlockDesc> = {
             let mut m = HashMap::new();
-            let block_types = ["DG", "HD", "CG", "TX", "MD", "CN"];
+            let block_types = ["DG", "HD", "CG", "TX", "MD", "CN", "CC", "SI"];
             block_types.into_iter().for_each(|key| {
                 let desc = parse_toml(key.to_lowercase().as_str()).unwrap();  // toml file names in lowercase
                 m.insert(key.to_string(), desc);  // key in uppercase
@@ -609,16 +634,22 @@ pub mod parser {
         match name_info.get_id().as_str() {
             "##TX" => {
                 let name_v = name_info.get_data_value("tx_data").unwrap();
-                Ok(name_v.clone().try_into().unwrap())
+                Ok(name_v.clone().try_into()?)
             },
             "##MD" => {
                 let name_v = name_info.get_data_value("md_data").unwrap();
-                Ok(name_v.clone().try_into().unwrap())
+                Ok(name_v.clone().try_into()?)
             },
             _ => {
                 Err("unknown CN name block".into())
             },
         }   
+    }
+
+    pub fn get_tx_data(file: &mut BufReader<File>, tx_offset: u64) -> Result<String, Box<dyn std::error::Error>> {
+        let desc = get_block_desc(file, tx_offset)?;
+        let tx_info: BlockInfo = desc.try_parse_buf(file, tx_offset)?;
+        Ok(tx_info.get_data_value("tx_data").unwrap().clone().try_into()?)
     }
         
 }

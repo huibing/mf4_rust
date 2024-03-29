@@ -5,7 +5,6 @@ rust 语言编写的mf4读取库
 只支持asam mf4 version >= 4.0
 标准来源 <a href="https://www.asam.net/standards/detail/mdf/wiki/">ASAM MDF</a>
 
-
 ## 功能
 
 - 读取mf4文件
@@ -19,13 +18,13 @@ rust 语言编写的mf4读取库
 ```shell
     cargo install rust_mf4
 ```
+
 or
+
 ```toml
     [dependencies]
     rust_mf4 = "0.1"
 ```
-        
-
 
 ## 使用
 

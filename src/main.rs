@@ -3,8 +3,6 @@ use std::fs::File;
 use std::io::BufReader;
 
 
-
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // test string
     let toml_content = r####"  
