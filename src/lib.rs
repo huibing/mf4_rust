@@ -486,6 +486,11 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
         pub fn get_data_value_copy(&self, data_name: &str) -> Option<DataValue> {
             Some(self.data.get(data_name)?.clone())
         }
+        pub fn get_data_value_first<T>(&self, data_name: &str) -> Option<T>
+        where Vec<T>: TryFrom<DataValue, Error = &'static str> , T: Clone,{
+            let data_vec: Vec<T> = self.get_data_value_copy(data_name)?.try_into().unwrap();
+            Some(data_vec[0].clone())
+        }
         pub fn get_id(&self) -> &String {
             &self.id
         }
@@ -650,6 +655,24 @@ pub mod parser {
         let desc = get_block_desc(file, tx_offset)?;
         let tx_info: BlockInfo = desc.try_parse_buf(file, tx_offset)?;
         Ok(tx_info.get_data_value("tx_data").unwrap().clone().try_into()?)
+    }
+
+    pub fn get_text(file :&mut BufReader<File>, offset: u64) -> Result<String, Box<dyn std::error::Error>> {
+        let desc = get_block_desc(file, offset)?;
+        let tx_info: BlockInfo = desc.try_parse_buf(file, offset)?;
+        match tx_info.get_id().as_str() {
+            "##TX" => {
+                let name_v = tx_info.get_data_value("tx_data").unwrap();
+                Ok(name_v.clone().try_into()?)
+            },
+            "##MD" => {
+                let name_v = tx_info.get_data_value("md_data").unwrap();
+                Ok(name_v.clone().try_into()?)
+            },
+            _ => {
+                Err(format!("unknown TEXT block at offset: {}", offset).into())
+            }
+        }
     }
         
 }

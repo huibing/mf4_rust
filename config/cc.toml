@@ -16,4 +16,4 @@ cc_ref_count = {data_type="UINT16", size=1}
 cc_val_count = {data_type="UINT16", size=1} 
 cc_phy_range_min = {data_type="REAL", size=1} 
 cc_phy_range_max = {data_type="REAL", size=1} 
-cc_val = {data_type="UINT64", size=1} 
+cc_val = {data_type="UINT64"} # this could be f64 in some cases, conversion is needed in code
