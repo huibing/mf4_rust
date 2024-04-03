@@ -1,7 +1,7 @@
 pub mod conversion {
     use std::fs::File;
     use std::io::BufReader;
-    use crate::block::{BlockInfo, DataValue};
+    use crate::block::BlockInfo;
     use crate::parser::{get_tx_data, get_text};
 
     #[derive(Debug)]
@@ -39,15 +39,19 @@ pub mod conversion {
 
     impl Conversion {
         pub fn new(block_info: &BlockInfo, buf: &mut BufReader<File>) -> Result<Self, Box<dyn std::error::Error>> {
-            let name: String = get_tx_data(buf, block_info.get_link_offset_normal("cc_tx_name").unwrap()).unwrap();
-            let unit: String = get_text(buf, block_info.get_link_offset_normal("cc_unit").unwrap()).unwrap();
-            let comment: String = get_text(buf, block_info.get_link_offset_normal("cc_comment").unwrap()).unwrap();
+            let name: String = get_tx_data(buf, block_info.get_link_offset_normal("cc_tx_name").unwrap())
+                                .unwrap_or("".to_string());
+            let unit: String = get_text(buf, block_info.get_link_offset_normal("cc_md_unit").unwrap())
+                                .unwrap_or("".to_string());
+            let comment: String = get_text(buf, block_info.get_link_offset_normal("cc_md_comment").unwrap())
+                                .unwrap_or("".to_string());
             let inverse_ref: u64 = block_info.get_link_offset_normal("cc_cc_inverse").unwrap(); // zero if not inverse
-            let cc_type_raw:u8 = block_info.get_data_value_first("cc_md_unit").unwrap();
+            let cc_type_raw:u8 = block_info.get_data_value_first("cc_type").unwrap();
             let mut cc_type = CcType::NotImplemented;
             let cc_val: Vec<u64> = block_info.get_data_value("cc_val").unwrap().clone().try_into().unwrap();
             let cc_val_count: u16 = block_info.get_data_value_first("cc_val_count").unwrap();
-            let cc_ref: Vec<u64> = block_info.get_link_offset_vec("cc_ref").unwrap().clone().try_into().unwrap();
+            let cc_ref: Vec<u64> = block_info.get_link_offset_vec("cc_ref")
+                                            .unwrap_or(Vec::new()).clone().try_into().unwrap(); // could be Nil
             let cc_ref_count: u16 = block_info.get_data_value_first("cc_ref_count").unwrap();
             match cc_type_raw {
                 0 => { // one to one
@@ -128,7 +132,19 @@ pub mod conversion {
             })
         }
 
-        pub fn get_value<T, U>(&self, int: T) -> U 
+        pub fn get_unit(&self) -> &str {
+            &self.unit
+        }
+
+        pub fn get_comment(&self) -> &str {
+            &self.comment
+        }
+
+        pub fn is_inverse(&self) -> bool {
+            self.inverse_ref != 0
+        }
+
+        pub fn transform_value<T, U>(&self, int: T) -> U 
         where T: Into<f64>, U: From<f64>{  // intermediate calculation use f64
             let inp: f64 = int.into();
             match &self.cc_type {
@@ -144,26 +160,26 @@ pub mod conversion {
                     U::from(numerator / denominator)
                 },
                 CcType::TableInt((index, value)) => {
-                    let mut left_ind = 0;
-                    while inp < index[left_ind] && left_ind < index.len() {
-                        left_ind += 1;
+                    let mut right_ind = 0;
+                    while inp >= index[right_ind] && right_ind < index.len() {
+                        right_ind += 1;
                     };
-                    if left_ind == 0 {
+                    if right_ind == 0 {
                         U::from(value[0])
-                    } else if left_ind == index.len() - 1 {
+                    } else if right_ind == index.len() {
                         U::from(value[value.len()-1])
                     } else {
-                        let left_val = value[left_ind-1];
-                        let right_val = value[left_ind];
-                        let left_ind_val = index[left_ind-1];
-                        let right_ind_val = index[left_ind];
+                        let left_val = value[right_ind-1];
+                        let right_val = value[right_ind];
+                        let left_ind_val = index[right_ind-1];
+                        let right_ind_val = index[right_ind];
                         let ratio = (right_val - left_val) / (right_ind_val - left_ind_val);
-                        U::from(left_val + ratio * (inp - left_val))
+                        U::from(left_val + ratio * (inp - left_ind_val))
                     }
                 },
                 CcType::Table((index, value)) => {
                     let mut left_ind = 0;
-                    while inp < index[left_ind] && left_ind < index.len() {
+                    while inp >= index[left_ind] && left_ind < index.len() {
                         left_ind += 1;
                     }
                     U::from(value[left_ind])
@@ -171,13 +187,11 @@ pub mod conversion {
                 CcType::ValueRange(value) => {
                     let default_value = value.last().unwrap();
                     let mut left_ind = 0;
-                    while inp < value[left_ind] && left_ind < value.len()-1 {
+                    while inp >= value[left_ind] && left_ind < value.len()-1 {
                         left_ind += 3;
                     };
-                    if left_ind == value.len()-1 {
+                    if left_ind >= value.len() - 1 {
                         U::from(default_value.to_owned())
-                    } else if left_ind == 0 {
-                        U::from(value[2])
                     } else {
                         U::from(value[left_ind+2])
                     }
@@ -187,7 +201,149 @@ pub mod conversion {
                 }
             }
         }
+
+        pub fn convert_to_text<T>(&self, buf: &mut BufReader<File>,int: T) -> Result<String, Box<dyn std::error::Error>> 
+        where T: Into<f64> {
+            let inp: f64 = int.into();
+            match &self.cc_type {
+                CcType::ValueRangeText((value, ref_text)) => {
+                    let mut left_ind = 0;
+                    let default_value: String = get_text(buf, ref_text[ref_text.len()-1])
+                                                .unwrap_or("".to_string());
+                    while left_ind < value.len() && inp >= value[left_ind] {
+                        left_ind += 2;
+                    }
+                    if left_ind >= 2 {
+                        let left_val = value[left_ind-2];
+                        let right_val = value[left_ind-1];
+                        if inp <= right_val && inp >= left_val {
+                            Ok(get_text(buf, ref_text[left_ind/2-1]).unwrap_or(default_value))
+                        } else {
+                            Ok(default_value)
+                        }
+                    } else {
+                        Ok(default_value)
+                    }
+                },
+                CcType::ValueText((value, ref_text)) => {
+                    let mut left_ind:usize = 0;
+                    let default_value: String = get_text(buf, ref_text[ref_text.len()-1])
+                                                .unwrap_or("".to_string());
+                    while left_ind < value.len() && inp != value[left_ind] {
+                        left_ind += 1;
+                    }
+                    if left_ind < value.len() {
+                        Ok(get_text(buf, ref_text[left_ind]).unwrap_or(default_value))
+                    } else {
+                        Ok(default_value)
+                    }
+                },
+                _ => {
+                        panic!("cc block {} has not support cc_type", self.name);
+                    }
+            }
+        }
     }
 
     
+}
+
+
+#[cfg(test)]
+pub mod conversion_test {
+    use crate::components::cc::conversion::*;
+    use crate::block::*;
+    use rust_embed::RustEmbed;
+    use std::io::{BufReader, Write};
+    use std::fs::File;
+    use std::sync::Mutex;
+    use rstest::*;
+
+    #[derive(RustEmbed)]
+    #[folder = "test/"]
+    #[prefix = "test/"]
+    struct Asset;
+
+    #[fixture]
+    #[once]
+    fn buffer() -> Mutex<BufReader<File>> {
+        let file_data = Asset::get("test/1.mf4").unwrap();
+        let mut new_file = File::create("temp.mf4").unwrap();
+        new_file.write(file_data.data.as_ref()).unwrap();
+        let file = File::open("temp.mf4").unwrap();
+        let buf= BufReader::new(file);
+        Mutex::new(buf)
+    }
+
+    #[fixture]
+    #[once]
+    fn cc_desc() -> BlockDesc {
+        let dg_toml_file = Asset::get("test/cc.toml").unwrap();
+        let toml_str = String::from_utf8(dg_toml_file.data.as_ref().to_vec()).unwrap();
+        toml::from_str(toml_str.as_str()).unwrap()
+    }
+
+    #[rstest]
+    fn test_cc1(buffer: &Mutex<BufReader<File>>, cc_desc: &'static BlockDesc) {
+        let offset = 0x52E8;
+        let mut buf = buffer.lock().unwrap();
+        let cc_info: BlockInfo = cc_desc.try_parse_buf(&mut buf, offset).unwrap();
+        let cc = Conversion::new(&cc_info, &mut buf).unwrap();
+
+        println!("{:?}", cc);
+        assert_eq!(cc.get_unit(), "");
+        assert_eq!(cc.get_comment(), "");
+        assert!(!cc.is_inverse());
+        assert_eq!(cc.transform_value::<f64, f64>(1000.0), 2000.0);   // linear with p2 = 2
+    }
+
+    #[rstest]
+    fn test_cc2(buffer: &Mutex<BufReader<File>>, cc_desc: &'static BlockDesc) {
+        let offset = 0x5348;
+        let mut buf = buffer.lock().unwrap();
+        let cc_info: BlockInfo = cc_desc.try_parse_buf(&mut buf, offset).unwrap();
+        let cc = Conversion::new(&cc_info, &mut buf).unwrap();
+
+        println!("{:?}", cc);
+        assert_eq!(cc.get_unit(), "");
+        assert_eq!(cc.get_comment(), "");
+        assert!(!cc.is_inverse());
+        assert_eq!(cc.transform_value::<f64, f64>(1000.0), 1000.0);   // linear with p2 = 1
+    }
+
+    #[rstest]
+    fn test_cc3(buffer: &Mutex<BufReader<File>>, cc_desc: &'static BlockDesc) {
+        let offset = 0x53A8;
+        let mut buf = buffer.lock().unwrap();
+        let cc_info: BlockInfo = cc_desc.try_parse_buf(&mut buf, offset).unwrap();
+        let cc = Conversion::new(&cc_info, &mut buf).unwrap();
+
+        println!("{:?}", cc);
+        assert_eq!(cc.get_unit(), "hundredfive\0");
+        assert_eq!(cc.get_comment(), "");
+        assert!(!cc.is_inverse());
+        assert_eq!(cc.convert_to_text::<f64>(&mut buf, 0.5).unwrap(), "Zero_to_one\0".to_string());
+        assert_eq!(cc.convert_to_text(&mut buf, 1u8).unwrap(), "Zero_to_one\0".to_string());
+        assert_eq!(cc.convert_to_text(&mut buf, 2.5).unwrap(), "two_to_three\0".to_string());
+        assert_eq!(cc.convert_to_text(&mut buf, 105).unwrap(), "hundredfive\0".to_string());
+        assert_eq!(cc.convert_to_text(&mut buf, 105.1).unwrap(), "".to_string());
+        assert_eq!(cc.convert_to_text(&mut buf, 15.1).unwrap(), "fourteen_to_seventeen\0".to_string());
+    }
+
+    #[rstest]
+    fn test_cc4(buffer: &Mutex<BufReader<File>>, cc_desc: &'static BlockDesc) {
+        let offset = 0x5508;
+        let mut buf = buffer.lock().unwrap();
+        let cc_info: BlockInfo = cc_desc.try_parse_buf(&mut buf, offset).unwrap();
+        let cc = Conversion::new(&cc_info, &mut buf).unwrap();
+
+        println!("{:?}", cc);
+        assert_eq!(cc.get_unit(), "unknown signal type\0");
+        assert_eq!(cc.get_comment(), "");
+        assert!(!cc.is_inverse());
+        assert_eq!(cc.convert_to_text(&mut buf, 15.1).unwrap(), "unknown signal type\0".to_string());   // linear with p2 = 1
+        assert_eq!(cc.convert_to_text(&mut buf, 3).unwrap(), "Sinus\0".to_string());   // linear with p2 = 1
+        assert_eq!(cc.convert_to_text(&mut buf, 2).unwrap(), "Square\0".to_string());   // linear with p2 = 1
+        assert_eq!(cc.convert_to_text(&mut buf, 1).unwrap(), "SawTooth\0".to_string());   // linear with p2 = 1
+    }
 }

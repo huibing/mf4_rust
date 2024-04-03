@@ -59,6 +59,12 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 },
                 DataType::UINT64 => {
                     let mut res: Vec<u64> = Vec::new();
+                    let size:usize;    // to handle variable size
+                    if self.size.is_none() {
+                        size = (cur.get_ref().len() - cur.position() as usize)/8;
+                    } else {
+                        size = self.size.unwrap() as usize;
+                    }
                     let mut eight_bytes_buf: [u8; 8] = [0u8;8];
                     (0..size).into_iter().for_each(|_| {
                         cur.read_exact(&mut eight_bytes_buf).unwrap();
@@ -366,7 +372,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
     }
 
     #[derive(Debug, Clone)]
-    enum LinkAddr {
+    pub enum LinkAddr {
         Normal(u64),
         Variable(Vec<u64>)
     }

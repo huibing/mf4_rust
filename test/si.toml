@@ -1,0 +1,13 @@
+id = "##SI"
+implemented = true
+
+[link]
+si_tx_name = ["TX"]
+si_tx_path = ["TX"]
+si_md_comment = ["TX", "MD"]
+
+[data]
+si_type = {data_type="UINT8", size=1}   
+si_bus_type = {data_type="UINT8", size=1} 
+si_flags = {data_type="UINT8", size=1} 
+si_reserved = {data_type="BYTE", size=5} 

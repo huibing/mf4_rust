@@ -1,0 +1,21 @@
+id = "##HD"
+implemented = true
+
+[link]
+hd_dg_first = ["DG"]
+hd_fh_first = ["FH"]
+hd_ch_first = ["CH"]
+hd_at_first = ["AT"]
+hd_ev_first = ["EV"]
+hd_md_comment = ["TX", "MD"]
+
+[data]
+hd_start_time_ns = {data_type="UINT64", size=1}
+hd_tz_offset_min = {data_type="INT16", size=1}
+hd_dst_offset_min = {data_type="INT16", size=1}
+hd_time_flags = {data_type="UINT8", size=1}
+hd_time_class = {data_type="UINT8", size=1}
+hd_flags = {data_type="UINT8", size=1}
+hd_reserved = {data_type="BYTE", size=1}
+hd_start_angle_rad = {data_type="REAL", size=1}
+hd_start_distance_m = {data_type="REAL", size=1}
