@@ -353,7 +353,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 // read parse data using datafield's try_parse_value method
                 for dname in self.get_data_fields().unwrap() {
                     let field = self.get_data_field(dname).unwrap();  // panic if no field description found
-                    let data_value = field.try_parse_value(&mut cur)?;
+                    let data_value: DataValue = field.try_parse_value(&mut cur)?;
                     blk_info.data.insert(dname.clone(), data_value);
                 }
                 blk_info.map_links().unwrap();
@@ -553,6 +553,7 @@ pub mod parser {
         };
     }
     pub fn get_block_desc_by_name(name: String) -> Option<&'static BlockDesc> {
+        let name = name.to_uppercase();
         Some(DESC_MAP.get(&name)?)
     }
 
@@ -638,23 +639,28 @@ pub mod parser {
         Ok(link_list)
     }
 
-    pub fn cn_get_name(file: &mut BufReader<File>, cn_info: &BlockInfo) -> Result<String, Box<dyn std::error::Error>> {
-        let name_offset = cn_info.get_link_offset_normal("cn_tx_name").unwrap();
-        let desc = get_block_desc(file, name_offset)?;
-        let name_info: BlockInfo = desc.try_parse_buf(file, name_offset)?;
-        match name_info.get_id().as_str() {
-            "##TX" => {
-                let name_v = name_info.get_data_value("tx_data").unwrap();
-                Ok(name_v.clone().try_into()?)
-            },
-            "##MD" => {
-                let name_v = name_info.get_data_value("md_data").unwrap();
-                Ok(name_v.clone().try_into()?)
-            },
-            _ => {
-                Err("unknown CN name block".into())
-            },
-        }   
+    pub fn get_child_links<'a>(file: &mut BufReader<File>, first_child_offset: u64, block_type: &'static str) 
+        -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+        let mut link_list: Vec<u64> = Vec::new();
+        let blk_str: String = block_type.to_lowercase();
+        let block_desc: &BlockDesc = DESC_MAP.get(block_type).unwrap();
+        let link_name = format!("{0}_{0}_next", blk_str);   // there is a pattern for CN CG DG link-list
+        let mut cursor = first_child_offset;
+        link_list.push(cursor);
+        let mut counter = 0;
+        loop {
+            let blk: BlockInfo = block_desc.try_parse_buf(file, cursor)?;
+            cursor = blk.get_link_offset_normal(link_name.as_str()).unwrap();
+            if cursor == 0 {
+                break;
+            }
+            link_list.push(cursor);    
+            counter += 1; 
+            if counter > 1000 {
+                panic!("too many blocks in list at offset: {}", first_child_offset);
+            }
+        }
+        Ok(link_list)
     }
 
     pub fn get_tx_data(file: &mut BufReader<File>, tx_offset: u64) -> Result<String, Box<dyn std::error::Error>> {
@@ -792,7 +798,6 @@ pub mod parser_test {
         println!("Total CN count: {}", cn_list.len());
         for cn in cn_list.iter() {
             println!("{:?}", cn);
-            println!("CN name: {}", cn_get_name(&mut buf, cn).unwrap());
         }
     }
 

@@ -2,9 +2,9 @@ pub mod conversion {
     use std::fs::File;
     use std::io::BufReader;
     use crate::block::BlockInfo;
-    use crate::parser::{get_tx_data, get_text};
+    use crate::parser::{get_tx_data, get_text, get_block_desc_by_name};
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct Conversion 
     {
         name: String,
@@ -14,7 +14,7 @@ pub mod conversion {
         cc_type: CcType,
     } 
     
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub enum CcType {
         OneToOne,
         Linear((f64, f64)),
@@ -38,7 +38,9 @@ pub mod conversion {
     }
 
     impl Conversion {
-        pub fn new(block_info: &BlockInfo, buf: &mut BufReader<File>) -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
+            let cc_desc = get_block_desc_by_name("CC".to_string()).unwrap();
+            let block_info: BlockInfo = cc_desc.try_parse_buf(buf, offset).unwrap();
             let name: String = get_tx_data(buf, block_info.get_link_offset_normal("cc_tx_name").unwrap())
                                 .unwrap_or("".to_string());
             let unit: String = get_text(buf, block_info.get_link_offset_normal("cc_md_unit").unwrap())
@@ -284,11 +286,10 @@ pub mod conversion_test {
     }
 
     #[rstest]
-    fn test_cc1(buffer: &Mutex<BufReader<File>>, cc_desc: &'static BlockDesc) {
+    fn test_cc1(buffer: &Mutex<BufReader<File>>) {
         let offset = 0x52E8;
         let mut buf = buffer.lock().unwrap();
-        let cc_info: BlockInfo = cc_desc.try_parse_buf(&mut buf, offset).unwrap();
-        let cc = Conversion::new(&cc_info, &mut buf).unwrap();
+        let cc = Conversion::new(&mut buf, offset).unwrap();
 
         println!("{:?}", cc);
         assert_eq!(cc.get_unit(), "");
@@ -298,11 +299,10 @@ pub mod conversion_test {
     }
 
     #[rstest]
-    fn test_cc2(buffer: &Mutex<BufReader<File>>, cc_desc: &'static BlockDesc) {
+    fn test_cc2(buffer: &Mutex<BufReader<File>>) {
         let offset = 0x5348;
         let mut buf = buffer.lock().unwrap();
-        let cc_info: BlockInfo = cc_desc.try_parse_buf(&mut buf, offset).unwrap();
-        let cc = Conversion::new(&cc_info, &mut buf).unwrap();
+        let cc = Conversion::new(&mut buf, offset).unwrap();
 
         println!("{:?}", cc);
         assert_eq!(cc.get_unit(), "");
@@ -312,11 +312,10 @@ pub mod conversion_test {
     }
 
     #[rstest]
-    fn test_cc3(buffer: &Mutex<BufReader<File>>, cc_desc: &'static BlockDesc) {
+    fn test_cc3(buffer: &Mutex<BufReader<File>>) {
         let offset = 0x53A8;
         let mut buf = buffer.lock().unwrap();
-        let cc_info: BlockInfo = cc_desc.try_parse_buf(&mut buf, offset).unwrap();
-        let cc = Conversion::new(&cc_info, &mut buf).unwrap();
+        let cc = Conversion::new(&mut buf, offset).unwrap();
 
         println!("{:?}", cc);
         assert_eq!(cc.get_unit(), "hundredfive\0");
@@ -331,11 +330,10 @@ pub mod conversion_test {
     }
 
     #[rstest]
-    fn test_cc4(buffer: &Mutex<BufReader<File>>, cc_desc: &'static BlockDesc) {
+    fn test_cc4(buffer: &Mutex<BufReader<File>>) {
         let offset = 0x5508;
         let mut buf = buffer.lock().unwrap();
-        let cc_info: BlockInfo = cc_desc.try_parse_buf(&mut buf, offset).unwrap();
-        let cc = Conversion::new(&cc_info, &mut buf).unwrap();
+        let cc = Conversion::new(&mut buf, offset).unwrap();
 
         println!("{:?}", cc);
         assert_eq!(cc.get_unit(), "unknown signal type\0");
