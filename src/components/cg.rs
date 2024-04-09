@@ -2,7 +2,7 @@ pub mod channelgroup {
     use std::io::BufReader;
     use std::fs::File;
     use crate::block::{BlockInfo, BlockDesc};
-    use crate::parser::{get_text, get_block_desc_by_name, get_child_links};
+    use crate::parser::{get_clean_text, get_block_desc_by_name, get_child_links};
     use crate::components::si::sourceinfo::SourceInfo;
     use crate::components::cn::channel::Channel;
 
@@ -24,10 +24,10 @@ pub mod channelgroup {
         pub fn new(buf:&mut BufReader<File>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
             let cg_desc: &'static BlockDesc = get_block_desc_by_name("CG".to_string()).unwrap();
             let info: BlockInfo = cg_desc.try_parse_buf(buf, offset).unwrap();
-            let acq_name = get_text(buf, info.get_link_offset_normal("cg_tx_acq_name").unwrap())
+            let acq_name = get_clean_text(buf, info.get_link_offset_normal("cg_tx_acq_name").unwrap())
                                     .unwrap_or("".to_owned());  // Nil is allowed
             let acq_source = SourceInfo::new(buf, info.get_link_offset_normal("cg_si_acq_source").unwrap()).unwrap();
-            let comments = get_text(buf, info.get_link_offset_normal("cg_md_comment").unwrap())
+            let comments = get_clean_text(buf, info.get_link_offset_normal("cg_md_comment").unwrap())
                                     .unwrap_or("".to_owned());   // Nil is allowed
             let path_sep = match info.get_data_value_first::<u16>("cg_path_separator") {
                 Some(0x2F) => "/".to_owned(),
@@ -90,6 +90,16 @@ pub mod channelgroup {
 
         pub fn get_invalid_bytes(&self) -> u32 {
             self.invalid_bytes
+        }
+
+        pub fn get_channels(&self) -> &Vec<Channel> {
+            &self.channels
+        }
+
+        pub fn get_channel_names(&self) -> Vec<String> {
+            self.channels.iter()
+                .map(|c| c.get_name().to_owned())
+                .collect()
         }
     }
 }

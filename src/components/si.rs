@@ -2,7 +2,7 @@ pub mod sourceinfo {
     use std::io::BufReader;
     use std::fs::File;
     use crate::block::BlockInfo;
-    use crate::parser::{get_text, get_block_desc_by_name};
+    use crate::parser::{get_clean_text, get_block_desc_by_name};
     use std::fmt::Display;
 
     #[derive(Debug, Clone)]
@@ -73,13 +73,13 @@ pub mod sourceinfo {
             let info: BlockInfo = si_desc.try_parse_buf(buf, offset)?;
             let name_offset = info.get_link_offset_normal("si_tx_name")
                                                         .ok_or("Can not find source info name")?;
-            let name = get_text(buf, name_offset).unwrap_or("".to_string());
+            let name = get_clean_text(buf, name_offset).unwrap_or("".to_string());
             let path_offset = info.get_link_offset_normal("si_tx_path")
                                                         .ok_or("Can not find source info path")?;
-            let path = get_text(buf, path_offset).unwrap_or("".to_string());
+            let path = get_clean_text(buf, path_offset).unwrap_or("".to_string());
             let comment_offset = info.get_link_offset_normal("si_md_comment")
                                                     .ok_or("Can not find source info comment")?;
-            let comment = get_text(buf, comment_offset).unwrap_or("".to_string());
+            let comment = get_clean_text(buf, comment_offset).unwrap_or("".to_string());
             let si_type = match info.get_data_value_first::<u8>("si_type") {
                 Some(1) => SiType::ECU,
                 Some(2) => SiType::BUS,

@@ -1,4 +1,5 @@
 pub mod components;
+pub mod data_serde;
 
 pub mod block {  // utility struct and functions for parsing mdf block link and data
     use serde::{Deserialize, Serialize};
@@ -684,6 +685,16 @@ pub mod parser {
             _ => {
                 Err(format!("unknown TEXT block at offset: {}", offset).into())
             }
+        }
+    }
+
+    pub fn get_clean_text(file :&mut BufReader<File>, offset: u64) -> Result<String, Box<dyn std::error::Error>> {
+        // TX and MD block will have \0 terminated string; use this function to remove the tailing \0
+        let text = get_text(file, offset)?;
+        if text.len() > 0 {
+            Ok(text[..(text.len()-1)].to_owned())
+        } else {
+            Ok(text)
         }
     }
         
