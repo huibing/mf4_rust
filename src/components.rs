@@ -8,6 +8,8 @@ pub mod cg;
 pub mod si;
 pub mod dg;
 
+
+
 pub mod components_test {
     use crate::components::cg::channelgroup::*;
     use crate::components::cn::channel::Channel;
@@ -54,7 +56,7 @@ pub mod components_test {
 
     #[rstest]
     fn test_dg_new(buffer: &Mutex<BufReader<File>>) {
-        let offset: u64 = 0x8C70;
+        let offset: u64 = 0x8CB0;
         let mut buf = buffer.lock().unwrap();
         let dg: DataGroup = DataGroup::new(&mut buf, offset).unwrap();
         println!("{}", dg);

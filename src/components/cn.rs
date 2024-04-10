@@ -40,8 +40,10 @@ pub mod channel {
             let name = get_clean_text(buf, info.get_link_offset_normal("cn_tx_name").unwrap())?;
             let source = SourceInfo::new(buf, info.get_link_offset_normal("cn_si_source").unwrap())?;
             let conversion = Conversion::new(buf, info.get_link_offset_normal("cn_cc_conversion").unwrap())?;
-            let unit = get_clean_text(buf, info.get_link_offset_normal("cn_md_unit").unwrap())?;
-            let comment = get_clean_text(buf, info.get_link_offset_normal("cn_md_comment").unwrap())?;
+            let unit: String = get_clean_text(buf, info.get_link_offset_normal("cn_md_unit").unwrap())
+                                .unwrap_or("".to_string());
+            let comment: String = get_clean_text(buf, info.get_link_offset_normal("cn_md_comment").unwrap())
+                                .unwrap_or("".to_string());
             let cn_type: u8 = info.get_data_value_first("cn_type").ok_or("cn_type not found")?;
             let sync_type = match info.get_data_value_first::<u8>("cn_sync_type") {
                 Some(0) => SyncType::None,
@@ -108,7 +110,7 @@ pub mod channel {
             // this function will consume bytes
             let buf = Cursor::new(bytes);
             let mut res: Vec<T> = Vec::new();
-            
+
             Ok(Vec::new())
         }
     }

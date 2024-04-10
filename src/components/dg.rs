@@ -3,11 +3,12 @@ pub mod datagroup {
     use crate::components::cn::channel::Channel;
     use crate::parser::{get_block_desc_by_name, get_clean_text, get_child_links};
     use std::collections::HashMap;
-    use std::io::BufReader;
+    use std::io::{BufReader, Seek, SeekFrom, Read};
     use std::fs::File;
     use std::fmt::Display;
 
-    #[derive(Debug)]
+    type DynError = Box<dyn std::error::Error>;
+    #[derive(Debug, Clone, Copy)]
     pub enum RecIDSize {
         NORECID,
         UINT8,
@@ -43,10 +44,46 @@ pub mod datagroup {
         data: u64,
         channel_groups: Vec<ChannelGroup>,
         sorted: bool,
+        rec_id_map: HashMap<u64, (u32, u64)>, // record id -> (data bytes, cycle count)
+        offsets_map: HashMap<u64, Vec<u64>>, // record id -> offset
+    }
+
+    fn read_rec_id(rec_id_size: RecIDSize, buf: &mut BufReader<File>) -> Result<u64, DynError> {
+        // read record id to process ; Note this function will move buf's cursor
+        match rec_id_size {
+            RecIDSize::NORECID => Ok(0),
+            RecIDSize::UINT8 => {
+                let mut temp_buf = [0u8; 1];
+                buf.read_exact(&mut temp_buf).unwrap();
+                Ok(temp_buf[0] as u64)},
+            RecIDSize::UINT16 => {
+                let mut temp_buf = [0u8; 2];
+                buf.read_exact(&mut temp_buf).unwrap();
+                Ok(u16::from_le_bytes(temp_buf) as u64)
+            },
+            RecIDSize::UINT32 => {
+                let mut temp_buf = [0u8; 4];
+                buf.read_exact(&mut temp_buf).unwrap();
+                Ok(u32::from_le_bytes(temp_buf) as u64)
+            },
+            RecIDSize::UINT64 => {
+                let mut temp_buf = [0u8; 8];
+                buf.read_exact(&mut temp_buf).unwrap();
+                Ok(u64::from_le_bytes(temp_buf))
+            }
+        }
+    }
+
+    fn get_data_length(buf: &mut BufReader<File>, offset: u64) -> Result<u64, DynError> {
+        // read DT/DV/DZ block's length
+        buf.seek(SeekFrom::Start(offset+8))?;  // skip first 8 bytes
+        let mut temp_buf = [0u8; 8];
+        buf.read_exact(&mut temp_buf).unwrap();
+        Ok(u64::from_le_bytes(temp_buf))
     }
 
     impl DataGroup {
-        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
             let dg_desc = get_block_desc_by_name("DG".to_string()).unwrap();
             let info = dg_desc.try_parse_buf(buf, offset)?;
             let rec_id_size = match info.get_data_value_first::<u8>("dg_rec_id_size") {
@@ -70,12 +107,42 @@ pub mod datagroup {
                 0 | 1 => true,
                 _ => false
             };
+            let mut rec_id_map: HashMap<u64, (u32, u64)> = HashMap::new();
+            channel_groups.iter().for_each(|cg| {
+                rec_id_map.insert(cg.get_record_id(), 
+                (cg.get_sample_total_bytes(), cg.get_cycle_count()));
+            });
+            let mut offsets_map: HashMap<u64, Vec<u64>> = HashMap::new(); 
+            let mut cycle_count_map: HashMap<u64, u64> = HashMap::new(); // used to temporarily store cycle count to verify if data corrupted or invalid
+            let data_length = get_data_length(buf, data)?;
+            buf.seek(SeekFrom::Current(8))?; // skip link_count
+            let data_start = buf.stream_position()?;
+            while buf.stream_position()?-data_start < data_length {
+                let rec_id = read_rec_id(rec_id_size, buf)?;
+                let offset = buf.stream_position()?;
+                offsets_map.entry(rec_id)
+                           .and_modify(|v| v.push(offset))
+                           .or_insert(Vec::new());
+                let bytes_to_skip = rec_id_map.get(&rec_id).unwrap().0;  // skip this record's data field
+                buf.seek(SeekFrom::Current(bytes_to_skip as i64))?;
+                cycle_count_map.entry(rec_id)
+                               .and_modify(|v| {*v += 1})
+                               .or_insert(1);
+            }
+            // check if cycle count is valid
+            for (rec_id, cycle_count) in cycle_count_map.iter() {
+                if rec_id_map.get(rec_id).unwrap().1 != *cycle_count {
+                    return Err("Data corrupted: Invalid record cycle count.".into());
+                }
+            }
             Ok(Self { 
                 rec_id_size, 
                 comment, 
                 data, 
-                channel_groups,    // move channel_groups into obj
+                channel_groups,   
                 sorted,
+                rec_id_map,
+                offsets_map
              })
         }
 
@@ -95,6 +162,57 @@ pub mod datagroup {
 
         pub fn is_sorted(&self) -> bool {
             self.sorted
+        }
+
+        pub fn get_comment(&self) -> &str {
+            &self.comment
+        }
+
+        pub fn get_cg_names(&self) -> Vec<String> {
+            self.channel_groups.iter().map(|cg| cg.get_acq_name().to_string()).collect()
+        }
+
+        fn read_rec_id(&self, buf: &mut BufReader<File>, offset: u64) -> Result<u64, DynError> {
+            // read record id to process ; Note this function will move buf's cursor
+            buf.seek(SeekFrom::Start(offset)).unwrap();
+            let rec_id_size = self.get_rec_id_size();
+            match rec_id_size {
+                RecIDSize::NORECID => Ok(0),
+                RecIDSize::UINT8 => {
+                    let mut temp_buf = [0u8; 1];
+                    buf.read_exact(&mut temp_buf).unwrap();
+                    Ok(temp_buf[0] as u64)},
+                RecIDSize::UINT16 => {
+                    let mut temp_buf = [0u8; 2];
+                    buf.read_exact(&mut temp_buf).unwrap();
+                    Ok(u16::from_le_bytes(temp_buf) as u64)
+                },
+                RecIDSize::UINT32 => {
+                    let mut temp_buf = [0u8; 4];
+                    buf.read_exact(&mut temp_buf).unwrap();
+                    Ok(u32::from_le_bytes(temp_buf) as u64)
+                },
+                RecIDSize::UINT64 => {
+                    let mut temp_buf = [0u8; 8];
+                    buf.read_exact(&mut temp_buf).unwrap();
+                    Ok(u64::from_le_bytes(temp_buf))
+                }
+            }
+        }
+
+        pub fn next_cg_chunk(&self, buf: &mut BufReader<File>, rec_id: u64) -> Result<(), DynError> {
+            // assume buf's cursor is at the start of a record
+            if let RecIDSize::NORECID = self.rec_id_size {
+                let bytes_count = self.channel_groups[0].get_data_bytes();
+                buf.seek(SeekFrom::Current(bytes_count as i64)).unwrap();
+            }  
+            else {
+                let rec_id_read = self.read_rec_id(buf, self.data)?;
+                if rec_id_read != rec_id {
+                    
+                }
+            }
+            Ok(())
         }
     }
 

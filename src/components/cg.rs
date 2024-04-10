@@ -92,6 +92,10 @@ pub mod channelgroup {
             self.invalid_bytes
         }
 
+        pub fn get_sample_total_bytes(&self) -> u32 {
+            self.data_bytes + self.invalid_bytes
+        }
+
         pub fn get_channels(&self) -> &Vec<Channel> {
             &self.channels
         }
