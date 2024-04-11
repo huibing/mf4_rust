@@ -16,6 +16,7 @@ pub mod components_test {
     use crate::components::cn::channel::Channel;
     use crate::components::cc::conversion::*;
     use crate::components::dg::datagroup::DataGroup;
+    use super::dx::dx::DataLink; 
     use rust_embed::RustEmbed;
     use std::io::BufReader;
     use std::fs::File;
@@ -138,5 +139,31 @@ pub mod components_test {
         assert_eq!(cc.convert_to_text(&mut buf, 3).unwrap(), "Sinus".to_string());   // linear with p2 = 1
         assert_eq!(cc.convert_to_text(&mut buf, 2).unwrap(), "Square".to_string());   // linear with p2 = 1
         assert_eq!(cc.convert_to_text(&mut buf, 1).unwrap(), "SawTooth".to_string());   // linear with p2 = 1
+    }
+
+    #[rstest]
+    fn test_dl_new_0(buffer: &Mutex<BufReader<File>>) {
+        let offset: u64 = 0xdbc0;
+        let mut buf = buffer.lock().unwrap();
+        let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
+        println!("{:?}", dl);
+    }
+
+    #[rstest]
+    fn test_dl_new_1(buffer: &Mutex<BufReader<File>>) {
+        let offset: u64 = 0x8F10;
+        let mut buf = buffer.lock().unwrap();
+        let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
+        println!("{:?}", dl);
+        assert_eq!(dl.get_num_of_blocks(), 3);
+        assert_eq!(dl.get_start_offsets_in_file(), &vec![59528, 321912, 597648]);
+    }
+
+    #[rstest]
+    fn test_dl_new_2(buffer: &Mutex<BufReader<File>>) {
+        let offset: u64 = 0x9BD8;
+        let mut buf = buffer.lock().unwrap();
+        let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
+        println!("{:?}", dl);
     }
 }
