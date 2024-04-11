@@ -253,9 +253,19 @@ pub mod dx {
             if end_index > self.total_len {
                 return Err("Virtual offset out of range.".into());
             } else {
-                let start_block_id = {
+                let start_block_id: usize = {
+                    self.virtual_offsets.iter().position(|x| *x >= virtual_offset).unwrap() - 1
+                };
+                let end_block_id: usize = {
+                    self.virtual_offsets.iter().position(|x| *x >= end_index).unwrap() - 1
+                };
+                let blocks = self.data_blocks[start_block_id..=end_block_id]
+                                        .iter().zip(&self.virtual_offsets[start_block_id..=end_block_id]);
+                let mut cur_offset:u64 = virtual_offset;
+                for (block, block_start_offset) in blocks {
                     
                 }
+                Ok(())
             }
 
         }
