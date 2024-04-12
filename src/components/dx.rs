@@ -1,6 +1,6 @@
 /* DL DV DT SD RD blocks*/
 
-pub mod dx {
+pub mod dataxxx {
     use std::io::{Read, Seek, BufReader, SeekFrom};
     use std::fs::File;
 
@@ -8,9 +8,11 @@ pub mod dx {
 
     /* This trait should be implemented to DT SD and RD blocks
        This trait is used to read physically incontinuous data block linked by DL block*/
-    pub trait ReadVirtual{
+    pub trait VirtualBuf{
         fn read_virtual_buf(&self, from: &mut BufReader<File>, virtual_offset:u64, buf: &mut [u8]) 
             -> Result<(), DynError>;
+        
+        fn get_data_len(&self) -> u64;
     }
     #[derive(Debug)]
     pub struct DT{
@@ -19,6 +21,7 @@ pub mod dx {
     }
 
     impl DT{
+        /* This should also works for SD and RD blocks; they have samilar data structure  */
         pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError>{
             let mut data_buf = [0u8; 4];
             buf.seek(SeekFrom::Start(offset))?;
@@ -38,7 +41,7 @@ pub mod dx {
         }
     }
 
-    impl ReadVirtual for DT{
+    impl VirtualBuf for DT{
         fn read_virtual_buf(&self, from: &mut BufReader<File>, virtual_offset:u64, buf: &mut [u8]) -> Result<(), DynError> {
             let file_offset = self.data_offset + virtual_offset;
             from.seek(SeekFrom::Start(file_offset))?;
@@ -51,9 +54,14 @@ pub mod dx {
                 Ok(())
             }
         }
+
+        fn get_data_len(&self) -> u64 {
+            self.data_len
+        }
     }
 
     #[derive(Debug)]
+    #[allow(dead_code)]
     struct DLBlock {
         dl_dl_next: u64,
         dl_data: Vec<u64>,
@@ -196,7 +204,7 @@ pub mod dx {
                     cur_offset += x.data_len;
                     v.push(cur_offset);
                 });
-                v.pop();  // pop out total len
+                v.pop();  // pop out the last item which is the total length of serval DT blocks
                 v
             };
             /* verifiy offsets if not equal length */
@@ -245,8 +253,7 @@ pub mod dx {
         }
     }
 
-    impl ReadVirtual for DataLink {
-        /* assumption one: buf's length is not large enough to span across three seprate DT-blocks */
+    impl VirtualBuf for DataLink {
         fn read_virtual_buf(&self, from: &mut BufReader<File>, virtual_offset:u64, buf: &mut [u8]) 
         -> Result<(), DynError> {
             let end_index = virtual_offset + buf.len() as u64;
@@ -254,31 +261,53 @@ pub mod dx {
                 return Err("Virtual offset out of range.".into());
             } else {
                 let start_block_id: usize = {
-                    self.virtual_offsets.iter().position(|x| *x >= virtual_offset).unwrap() - 1
+                    // there is chance that start or end index exceeds the max of virtual offsets
+                    self.virtual_offsets.iter()
+                            .position(|x| *x > virtual_offset)
+                            .unwrap_or(self.virtual_offsets.len()) - 1
                 };
                 let end_block_id: usize = {
-                    self.virtual_offsets.iter().position(|x| *x >= end_index).unwrap() - 1
+                    self.virtual_offsets.iter()
+                            .position(|x| *x > end_index)
+                            .unwrap_or(self.virtual_offsets.len()) - 1
                 };
-                let blocks = self.data_blocks[start_block_id..=end_block_id]
+                if start_block_id == end_block_id {
+                    /* data in one DT block */
+                    let data_block = &self.data_blocks[start_block_id];
+                    let data_start_virtual_offset = self.virtual_offsets[start_block_id];
+                    data_block.read_virtual_buf(from,
+                             virtual_offset-data_start_virtual_offset, buf)?;
+                } else {
+                    /* data span across two or more physical DT block */
+                    let blocks = self.data_blocks[start_block_id..=end_block_id]
                                         .iter().zip(&self.virtual_offsets[start_block_id..=end_block_id]);
-                let mut cur_offset:u64 = virtual_offset;
-                for (block, block_start_offset) in blocks {
-                    
-                }
+                    let mut cur_offset:u64 = virtual_offset;
+                    for (block, block_start_v_offset) in blocks {
+                        let relative_offset: u64 = cur_offset - block_start_v_offset;
+                        let bytes_to_read: u64 = (block.data_len - relative_offset).min(end_index-cur_offset); // last block will use end - cur instead
+                        block.read_virtual_buf(from, 
+                                relative_offset, 
+                                &mut buf[(cur_offset-virtual_offset) as usize..(bytes_to_read+cur_offset-virtual_offset) as usize])?;
+                        cur_offset += bytes_to_read;  // update cursor offset for next iteration
+                    }
+                }   
                 Ok(())
             }
+        }
 
+        fn get_data_len(&self) -> u64 {
+            self.total_len
         }
     }
 
-    pub fn read_data_block(buf: &mut BufReader<File>, offset: u64) -> Result<Box<dyn ReadVirtual>, DynError> {
+    pub fn read_data_block(buf: &mut BufReader<File>, offset: u64) -> Result<Box<dyn VirtualBuf>, DynError> {
         buf.seek(SeekFrom::Start(offset))?;
         let mut four_bytes_id = [0u8; 4];
         buf.read_exact(&mut four_bytes_id)?;
         let id = String::from_utf8(four_bytes_id.to_vec()).unwrap();
         match id.as_str() {
-            "##DT " => Ok(Box::new(DT::new(buf, offset)?)),
-            "##DL " => Ok(Box::new(DataLink::new(buf, offset)?)),
+            "##DT" => Ok(Box::new(DT::new(buf, offset)?)),
+            "##DL" => Ok(Box::new(DataLink::new(buf, offset)?)),
             _ => Err("Unknown data block id.".into()),
         }
     }

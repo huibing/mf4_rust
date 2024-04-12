@@ -1,5 +1,5 @@
 pub mod channel {
-    use std::io::{Cursor, BufReader, Read};
+    use std::io::{Cursor, BufReader};
     use std::fs::File;
     use crate::block::BlockDesc;
     use crate::parser::{get_clean_text, get_block_desc_by_name};
@@ -104,7 +104,7 @@ pub mod channel {
             self.bit_offset
         }
 
-        pub fn from_bytes<T>(self, bytes: Vec<u8>) -> Result<Vec<T>, Box<dyn std::error::Error>> 
+        pub fn from_bytes<T>(self, bytes: &Vec<u8>) -> Result<Vec<T>, Box<dyn std::error::Error>> 
         where T: FromBeBytes + FromLeBytes
         {
             // this function will consume bytes

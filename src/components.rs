@@ -10,13 +10,14 @@ pub mod dg;
 pub mod dx;
 
 
-
+#[cfg(test)]
 pub mod components_test {
     use crate::components::cg::channelgroup::*;
     use crate::components::cn::channel::Channel;
     use crate::components::cc::conversion::*;
     use crate::components::dg::datagroup::DataGroup;
-    use super::dx::dx::DataLink; 
+    use crate::data_serde::*;
+    use super::dx::dataxxx::{DataLink, VirtualBuf}; 
     use rust_embed::RustEmbed;
     use std::io::BufReader;
     use std::fs::File;
@@ -157,13 +158,23 @@ pub mod components_test {
         println!("{:?}", dl);
         assert_eq!(dl.get_num_of_blocks(), 3);
         assert_eq!(dl.get_start_offsets_in_file(), &vec![59528, 321912, 597648]);
+        let mut data_buf = [0u8; 20];
+        dl.read_virtual_buf(&mut buf, 262_134, &mut data_buf).unwrap(); // this read will span across two blocks
+        assert_eq!(data_buf, [13, 1, 0, 0, 23, 0, 213, 57, 2, 0, 64, 39, 68, 1, 3, 101, 201, 69, 169, 1]);
     }
 
     #[rstest]
     fn test_dl_new_2(buffer: &Mutex<BufReader<File>>) {
-        let offset: u64 = 0x9BD8;
+        let offset: u64 = 0x9BD8;  // this dlblock points to one DT: 0x9D328
         let mut buf = buffer.lock().unwrap();
         let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
         println!("{:?}", dl);
+        let mut data_buf = [0u8; 10];
+        dl.read_virtual_buf(&mut buf, 0, &mut data_buf).unwrap();
+        assert_eq!(dl.get_num_of_blocks(), 1);
+        assert_eq!(dl.get_total_len(), 173628);
+        assert_eq!(data_buf, [32, 72, 146, 234, 150, 120, 139, 63, 244, 25]);
+        dl.read_virtual_buf(&mut buf, 173618, &mut data_buf).unwrap();
+        assert_eq!(data_buf, [48, 212, 40, 64, 231, 153, 171, 119, 114, 0]);
     }
 }
