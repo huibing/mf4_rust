@@ -729,7 +729,7 @@ pub mod parser {
 
         fn check_duplicate_channel(&self) -> Option<Vec<String>> {
             let mut dup_channel_list: Vec<String> = Vec::new();
-            let mut v:Vec<Vec<String>> = self.data_groups.iter().map(|dg| dg.get_all_channel_names()).collect();
+            let v:Vec<Vec<String>> = self.data_groups.iter().map(|dg| dg.get_all_channel_names()).collect();
             for i in 0..v.len(){
                 let v1 = v[i].iter().collect::<HashSet<&String>>();
                 for j in i+1..v.len() {
@@ -768,6 +768,10 @@ pub mod parser {
     
             pub fn get_all_channel_names(&self, c_map: &HashMap<String, ChannelLink>) -> Vec<String> {
                 c_map.iter().map(|(k, _)| k.clone()).collect()
+            }
+
+            pub fn check_duplicate_channel(&self) -> Option<Vec<String>> {
+                self.data.check_duplicate_channel()
             }
         }
     }
@@ -903,5 +907,6 @@ pub mod parser_test {
         let mdf = Mdf::new(file).unwrap();
         let channel_map = mdf.generate_channel_map();
         println!("channel_map: {:?}", mdf.get_all_channel_names(&channel_map));
+        println!("{:?}", mdf.check_duplicate_channel().unwrap());
     }
 }
