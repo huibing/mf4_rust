@@ -1,10 +1,12 @@
+/* Main user interface defined in DataGroup here. */
+
 pub mod datagroup {
     use crate::components::cg::channelgroup::ChannelGroup;
     use crate::components::cn::channel::Channel;
     use crate::parser::{get_block_desc_by_name, get_clean_text, get_child_links};
     use crate::components::dx::dataxxx::{VirtualBuf, read_data_block};
     use std::collections::HashMap;
-    use std::io::{BufReader, Seek, SeekFrom, Read};
+    use std::io::BufReader;
     use std::fs::File;
     use std::fmt::Display;
 
@@ -37,7 +39,6 @@ pub mod datagroup {
 
     }
 
-    #[allow(dead_code)]
     pub struct DataGroup{   
     // DataGroup is a container for ChannelGroups; this struct OWNS the ChannelGroups and its channels
         rec_id_size: RecIDSize,
@@ -47,7 +48,7 @@ pub mod datagroup {
         sorted: bool,
         rec_id_map: HashMap<u64, (u32, u64)>, // record id -> (data bytes, cycle count)
         offsets_map: HashMap<u64, Vec<u64>>, // record id -> offset
-        data_block: Box<dyn VirtualBuf>,
+        data_block: Box<dyn VirtualBuf>,  // one datagroup have one data_block
     }
 
     fn read_rec_id(rec_id_size: RecIDSize, buf: &Box<dyn VirtualBuf>, from:&mut BufReader<File>, v_offset: u64) -> Result<(u64, u8), DynError> {
@@ -92,10 +93,10 @@ pub mod datagroup {
             let comment = get_clean_text(buf, info.get_link_offset_normal("dg_md_comment").unwrap())
                                                             .unwrap_or("".to_string());
             let data = info.get_link_offset_normal("dg_data").unwrap();
-            let cg_list: Vec<u64> = get_child_links(buf, 
+            let cg_links: Vec<u64> = get_child_links(buf, 
                                     info.get_link_offset_normal("dg_cg_first").unwrap(), "CG").unwrap();
             let mut channel_groups: Vec<ChannelGroup> = Vec::new();
-            cg_list.into_iter().for_each(|off| {
+            cg_links.into_iter().for_each(|off| {
                 let cg: ChannelGroup = ChannelGroup::new(buf, off).unwrap();
                 channel_groups.push(cg)});
             let sorted = match channel_groups.len() {
@@ -111,13 +112,15 @@ pub mod datagroup {
             let mut cycle_count_map: HashMap<u64, u64> = HashMap::new(); // used to temporarily store cycle count to verify if data corrupted or invalid
             let data_block = read_data_block(buf, data)?;
             let data_length = data_block.get_data_len(); // skip link_count
-            let mut cur_off: u64 = 0;
+            let mut cur_off: u64 = 0; // virtual offset always start from 0
             while cur_off < data_length {
                 let (rec_id, id_size) = read_rec_id(rec_id_size, &data_block, buf, cur_off)?;
                 cur_off += id_size as u64;
-                offsets_map.entry(rec_id)
-                           .and_modify(|v| v.push(offset))
-                           .or_insert(Vec::new());
+                if !sorted{ /* for sorted dg, no offsets_map cache needed, it's easy to caculate record offset */
+                    offsets_map.entry(rec_id)
+                           .and_modify(|v| v.push(cur_off))
+                           .or_insert(vec![cur_off]);
+                }
                 let bytes_to_skip = rec_id_map.get(&rec_id).unwrap().0;  // skip this record's data field
                 cur_off += bytes_to_skip as u64;
                 cycle_count_map.entry(rec_id)
@@ -142,14 +145,37 @@ pub mod datagroup {
              })
         }
 
-        pub fn create_map(&self) -> Result<HashMap<String, ChannelLink>, ()>{
-            let mut hash_map: HashMap<String, ChannelLink> = HashMap::new();
+        pub fn create_map(&self) -> HashMap<String, ChannelLink>{
+            let mut cn_link_map: HashMap<String, ChannelLink> = HashMap::new();
             for cg in self.channel_groups.iter() {
                 for channel in cg.get_channels().iter() {
-                    hash_map.insert(channel.get_name().to_string(), ChannelLink(channel, cg, self));
+                    cn_link_map.insert(channel.get_name().to_string(), ChannelLink(channel, cg, self));
                 }
             }
-            Ok(hash_map)
+            cn_link_map
+        }
+
+        fn get_rec_id_offset(&self, rec_id: u64, cycle_index: u64) -> Option<u64> {
+            if !self.sorted {
+                self.offsets_map.get(&rec_id)
+                                .and_then(|x| x.get(cycle_index as usize).and_then(|y| Some(y.clone())))
+            } else {
+                let bytes_num = self.rec_id_map.get(&rec_id)?.0;
+                Some((cycle_index * bytes_num as u64) as u64)
+            }
+        }
+
+        pub fn get_cg_data(&self, rec_id: u64, index: u64, file: &mut BufReader<File>) -> Option<Vec<u8>> {
+            let virtual_offset = self.get_rec_id_offset(rec_id, index)?;
+            let data_block = &self.data_block;
+            let mut temp_buf = vec![0u8; self.rec_id_map.get(&rec_id)?.0 as usize];
+            data_block.read_virtual_buf(file, virtual_offset, &mut temp_buf[..]).ok()?;
+            Some(temp_buf)
+        }
+
+        pub fn get_all_channel_names(&self) -> Vec<String> {
+            self.channel_groups.iter()
+                               .flat_map(|cg| cg.get_channels().iter().map(|cn| cn.get_name().to_string())).collect()
         }
 
         pub fn get_rec_id_size(&self) -> &RecIDSize {

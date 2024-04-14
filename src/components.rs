@@ -64,7 +64,19 @@ pub mod components_test {
         let dg: DataGroup = DataGroup::new(&mut buf, offset).unwrap();
         println!("{}", dg);
         println!("is sorted: {}", dg.is_sorted());
-        let channel_map = dg.create_map().unwrap();
+        let channel_map = dg.create_map();
+        println!("\n\n{}", channel_map.get("time").unwrap().get_channel());
+        println!("\n\n{:?}", channel_map.get("time").unwrap().get_channel_group());
+    }
+
+    #[rstest]
+    fn test_dg_new_1(buffer: &Mutex<BufReader<File>>) {
+        let offset: u64 = 0x8cf0;
+        let mut buf = buffer.lock().unwrap();
+        let dg: DataGroup = DataGroup::new(&mut buf, offset).unwrap();
+        println!("{}", dg);
+        println!("is sorted: {}", dg.is_sorted());
+        let channel_map = dg.create_map();
         println!("\n\n{}", channel_map.get("time").unwrap().get_channel());
         println!("\n\n{:?}", channel_map.get("time").unwrap().get_channel_group());
     }

@@ -6,7 +6,7 @@ pub mod dataxxx {
 
     type DynError = Box<dyn std::error::Error>;
 
-    /* This trait should be implemented to DT SD and RD blocks
+    /* This trait should be implemented to DT SD and RD DL blocks
        This trait is used to read physically incontinuous data block linked by DL block*/
     pub trait VirtualBuf{
         fn read_virtual_buf(&self, from: &mut BufReader<File>, virtual_offset:u64, buf: &mut [u8]) 

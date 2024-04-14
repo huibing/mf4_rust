@@ -105,6 +105,7 @@ pub mod channelgroup {
                 .map(|c| c.get_name().to_owned())
                 .collect()
         }
+
     }
 }
 

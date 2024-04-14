@@ -205,6 +205,34 @@ pub fn parse_be_value<T>(cur: &mut Cursor<Vec<u8>>) -> T
         T::from_be_bytes(cur)
     }
 
+pub fn right_shift_bytes_inplace(bytes: &mut Vec<u8>, shift: usize) -> Result<(), &str> {
+    if shift>7 || shift < 1 {
+        return Err("Shift must be between 1 and 7");
+    } else {
+        let mut carry = 0u8;
+        for byte in bytes.iter_mut().rev() {
+            let shift_byte = (*byte >> shift) | carry;
+            carry = *byte << (8 - shift);
+            *byte = shift_byte;
+        }
+        Ok(())
+    }
+}
+
+pub fn right_shift_bytes(bytes: &Vec<u8>, shift: usize) -> Result<Vec<u8>, &str> {
+    if shift>7 || shift < 1 {
+        return Err("Shift must be between 1 and 7");
+    }
+    let mut new = Vec::new();
+    let mut carry = 0u8;
+    for byte in bytes.iter().rev() {
+        let shift_byte = (*byte >> shift) | carry;
+        carry = *byte << (8 - shift);
+        new.insert(0, shift_byte);
+    }
+    Ok(new)
+}
+
 
 
 #[cfg(test)]
@@ -241,5 +269,15 @@ pub mod serde_tests {
     fn test_f64_from_be_bytes() {
         let mut cursor = Cursor::new(vec![0x41u8, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         assert_eq!(3145728.0f64, parse_be_value(&mut cursor));
+    }
+
+    #[rstest]
+    fn test_right_shift_fn() {
+        let mut a: Vec<u8> = vec![0x01u8, 0x02, 0x03, 0x04];
+        let b = vec![0x01u8, 0x02, 0x03, 0x04];
+        right_shift_bytes_inplace(&mut a, 3).unwrap();
+        assert_eq!(vec![64, 96, 128, 0], a);
+        let new = right_shift_bytes(&b, 3).unwrap();
+        assert_eq!(vec![64, 96, 128, 0], new);
     }
 }
