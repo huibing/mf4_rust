@@ -506,7 +506,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
 
 pub mod parser {
     use crate::block::{BlockDesc, BlockInfo};
-    use crate::components::cn::channel;
+    use crate::components::cg::channelgroup::ChannelGroup;
     use rust_embed::RustEmbed;
     use std::io::{BufReader, Seek, Read, SeekFrom};
     use std::path::PathBuf;
@@ -743,9 +743,13 @@ pub mod parser {
             } else {
                 None
             }
+        } // fn check_duplicate_channel
+
+        pub fn get_all_channel_groups(&self) -> Vec<&ChannelGroup> {
+            self.data_groups.iter().flat_map(|dg| dg.get_channle_groups()).collect()
         }
             
-        }
+    }
         pub struct Mdf {
             pub mdfinfo: MdfInfo,
             pub data: MdfData
@@ -906,7 +910,29 @@ pub mod parser_test {
         let file = PathBuf::from("test/1.mf4");
         let mdf = Mdf::new(file).unwrap();
         let channel_map = mdf.generate_channel_map();
-        println!("channel_map: {:?}", mdf.get_all_channel_names(&channel_map));
-        println!("{:?}", mdf.check_duplicate_channel().unwrap());
+        assert!(mdf.check_duplicate_channel().is_none());
+        // print out channel group info
+        for cg in mdf.data.get_all_channel_groups() {
+            if cg.get_master().is_none() {
+                println!("Channel group {}%%{}has no master channel", cg.get_acq_name(), cg.get_acq_source());
+            } else {
+                let master_cn = cg.get_master().unwrap();
+                println!("Channel group {}%%{} has one master channel {}",
+                 cg.get_acq_name(), cg.get_acq_source(), master_cn.get_name());
+                println!("master channel has sync_type {:?}, and cn_type is {}",
+                 master_cn.get_sync_type(), master_cn.get_cn_type());
+            }
+        }
+        // print out channel info
+        for cn in mdf.get_all_channel_names(&channel_map) {
+            let cn_info = channel_map.get(&cn).unwrap().get_channel();
+            println!("Channel {} sync_type is {:?}, cn_type is {}, cn_data_type is {}", 
+            cn, cn_info.get_sync_type(), cn_info.get_cn_type(), cn_info.get_data_type());
+        }
+
+        // $CalibrationLog
+        let cn = channel_map.get("$CalibrationLog").unwrap().get_channel();
+        println!("Channel $CalibrationLog sync_type is {:?}, cn_type is {}, cn_data_type is {}",
+            cn.get_sync_type(), cn.get_cn_type(), cn.get_data_type());
     }
 }

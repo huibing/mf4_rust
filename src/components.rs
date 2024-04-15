@@ -16,7 +16,6 @@ pub mod components_test {
     use crate::components::cn::channel::Channel;
     use crate::components::cc::conversion::*;
     use crate::components::dg::datagroup::DataGroup;
-    use crate::data_serde::*;
     use super::dx::dataxxx::{DataLink, VirtualBuf}; 
     use rust_embed::RustEmbed;
     use std::io::BufReader;
@@ -64,9 +63,7 @@ pub mod components_test {
         let dg: DataGroup = DataGroup::new(&mut buf, offset).unwrap();
         println!("{}", dg);
         println!("is sorted: {}", dg.is_sorted());
-        let channel_map = dg.create_map();
-        println!("\n\n{}", channel_map.get("time").unwrap().get_channel());
-        println!("\n\n{:?}", channel_map.get("time").unwrap().get_channel_group());
+        let _ = dg.create_map();
     }
 
     #[rstest]
@@ -76,9 +73,7 @@ pub mod components_test {
         let dg: DataGroup = DataGroup::new(&mut buf, offset).unwrap();
         println!("{}", dg);
         println!("is sorted: {}", dg.is_sorted());
-        let channel_map = dg.create_map();
-        println!("\n\n{}", channel_map.get("time").unwrap().get_channel());
-        println!("\n\n{:?}", channel_map.get("time").unwrap().get_channel_group());
+        let _ = dg.create_map();
     }
 
     #[rstest]

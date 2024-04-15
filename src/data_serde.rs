@@ -219,7 +219,7 @@ pub fn right_shift_bytes_inplace(bytes: &mut Vec<u8>, shift: usize) -> Result<()
     }
 }
 
-pub fn right_shift_bytes(bytes: &Vec<u8>, shift: usize) -> Result<Vec<u8>, &str> {
+pub fn right_shift_bytes(bytes: &Vec<u8>, shift: u8) -> Result<Vec<u8>, &str> {
     if shift>7 || shift < 1 {
         return Err("Shift must be between 1 and 7");
     }

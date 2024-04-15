@@ -175,7 +175,7 @@ pub mod datagroup {
 
         pub fn get_all_channel_names(&self) -> Vec<String> {
             self.channel_groups.iter()
-                               .flat_map(|cg| cg.get_channels().iter().map(|cn| cn.get_name().to_string())).collect()
+                               .flat_map(|cg| cg.get_channel_names()).collect()
         }
 
         pub fn get_rec_id_size(&self) -> &RecIDSize {
@@ -192,6 +192,10 @@ pub mod datagroup {
 
         pub fn get_cg_names(&self) -> Vec<String> {
             self.channel_groups.iter().map(|cg| cg.get_acq_name().to_string()).collect()
+        }
+
+        pub fn get_channle_groups(&self) -> &Vec<ChannelGroup> {
+            &self.channel_groups
         }
 
     }

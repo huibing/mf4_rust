@@ -114,6 +114,9 @@ pub mod channelgroup {
                 .collect()
         }
 
+        pub fn get_master(&self) -> Option<&Channel> {
+            self.master.as_ref()
+        }
     }
 }
 
