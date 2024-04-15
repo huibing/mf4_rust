@@ -30,7 +30,7 @@ test:cargo:
   tags: [ rust_mf4_virtualmachine ]
   script:
     - rustc --version && cargo --version  # Print version info for debugging
-    - cargo test --workspace --verbose -- --nocapture
+    - cargo test --workspace --verbose -- --nocapture --test-threads=1
 
 # Optional: Use a third party library to generate gitlab junit reports
 # test:junit-report:
