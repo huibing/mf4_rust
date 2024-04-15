@@ -31,6 +31,7 @@ pub mod channel {
         bit_offset: u8,
         byte_offset: u32,
         bit_count: u32,
+        master: bool,
     }
 
     impl Channel {
@@ -45,6 +46,12 @@ pub mod channel {
             let comment: String = get_clean_text(buf, info.get_link_offset_normal("cn_md_comment").unwrap())
                                 .unwrap_or("".to_string());
             let cn_type: u8 = info.get_data_value_first("cn_type").ok_or("cn_type not found")?;
+            let master = match cn_type {
+                0 => false,
+                2 | 3 => true,
+                _ => return Err("cn_type not supportted yet.".into()),
+
+            };
             let sync_type = match info.get_data_value_first::<u8>("cn_sync_type") {
                 Some(0) => SyncType::None,
                 Some(1) => SyncType::Time,
@@ -69,6 +76,7 @@ pub mod channel {
                 bit_offset,
                 byte_offset,
                 bit_count,
+                master,
             })
         }
 
@@ -112,6 +120,10 @@ pub mod channel {
             let mut res: Vec<T> = Vec::new();
 
             Ok(Vec::new())
+        }
+
+        pub fn is_master(&self) -> bool {
+            self.master
         }
     }
 

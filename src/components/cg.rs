@@ -16,7 +16,8 @@ pub mod channelgroup {
         cycle_count: u64,
         data_bytes: u32,
         invalid_bytes: u32,
-        channels: Vec<Channel>
+        channels: Vec<Channel>,
+        master: Option<Channel>,
     }
 
     impl ChannelGroup {
@@ -44,8 +45,14 @@ pub mod channelgroup {
                                     .ok_or("cg_invalid_bytes not found")?;
             let mut channels = Vec::new();
             let cn_link_list = get_child_links(buf, info.get_link_offset_normal("cg_cn_first").unwrap(), "CN").unwrap();
+            let mut master: Option<Channel> = None;
             cn_link_list.into_iter().for_each(|cn_link| {
-                channels.push(Channel::new(buf, cn_link).unwrap())
+                let cn = Channel::new(buf, cn_link).unwrap();
+                if cn.is_master() {
+                    master = Some(cn);
+                } else {
+                    channels.push(cn);
+                }
             });
             Ok(Self {
                 acq_name,
@@ -56,7 +63,8 @@ pub mod channelgroup {
                 cycle_count,
                 data_bytes,
                 invalid_bytes,
-                channels
+                channels,
+                master
             })
         }
 
