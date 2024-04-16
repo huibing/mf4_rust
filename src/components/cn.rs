@@ -1,15 +1,16 @@
 pub mod channel {
     use std::io::{Cursor, BufReader};
     use std::fs::File;
+    use std::fmt::Display;
     use crate::block::BlockDesc;
     use crate::parser::{get_clean_text, get_block_desc_by_name};
     use crate::components::cc::conversion::Conversion;
     use crate::components::si::sourceinfo::SourceInfo;
-    use std::fmt::Display;
-    use crate::data_serde::{FromBeBytes, FromLeBytes, right_shift_bytes};
+    use crate::components::dg::datagroup::DataGroup;
+    use crate::data_serde::{FromBeBytes, FromLeBytes, right_shift_bytes, bytes_and_bits};
 
     
-
+    type DynError = Box<dyn std::error::Error>;
     #[derive(Debug, Clone)]
     pub enum SyncType {
         None,
@@ -52,7 +53,7 @@ pub mod channel {
     }
 
     impl Channel {
-        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
             let desc: &BlockDesc = get_block_desc_by_name("CN".to_string()).expect("CN block not found");
             let info: crate::block::BlockInfo = desc.try_parse_buf(buf, offset).unwrap();
             let name = get_clean_text(buf, info.get_link_offset_normal("cn_tx_name").unwrap())?;
@@ -123,8 +124,8 @@ pub mod channel {
             &self.cn_type
         }
 
-        pub fn get_data_type(&self) -> &u8 {
-            &self.data_type
+        pub fn get_data_type(&self) -> u8 {
+            self.data_type
         }
 
         pub fn get_source(&self) -> &SourceInfo {
@@ -155,7 +156,7 @@ pub mod channel {
             self.bit_offset
         }
 
-        pub fn from_bytes<T>(self, rec_bytes: &Vec<u8>) -> Result<T, Box<dyn std::error::Error>> 
+        pub fn from_bytes<T>(&self, rec_bytes: &Vec<u8>) -> Result<T, DynError> 
         where T: FromBeBytes + FromLeBytes
         {
             let bytes_to_read = self.bytes_num;
@@ -163,15 +164,19 @@ pub mod channel {
                                 (self.byte_offset + bytes_to_read) as usize].to_vec();
                 // TODO: handle bit offset
             let cn_data = if self.bit_offset != 0 {
-                right_shift_bytes(&raw_data, self.bit_offset)?
+                let mut new_bytes = right_shift_bytes(&raw_data, self.bit_offset)?;
+                bytes_and_bits(&mut new_bytes, self.bit_count);
+                new_bytes
             } else {
                 raw_data
             };
             let mut data_buf = Cursor::new(cn_data);
             match self.data_type {
+                // only distinguish little-edian and big-endian here. Concrete data types are handled in the up
+                // level functions.
                 0|2|4|6|7|8 => Ok(T::from_le_bytes(&mut data_buf)),
                 1|3|5|9 => Ok(T::from_be_bytes(&mut data_buf)),
-                _ => Err("data type not supportted yet.".into()),
+                _ => Err("data type not supportted.".into()),
             }
         }
 

@@ -1,6 +1,12 @@
 use std::io::{Read, Cursor};
 use byteorder::{ByteOrder, LittleEndian, BigEndian};
 use serde::{Deserialize, Serialize};
+use half::f16;
+
+pub struct UTF16String {
+    pub inner: String,
+}
+
 
 pub trait FromLeBytes {
     fn from_le_bytes<T>(buf: &mut T) -> Self
@@ -86,6 +92,15 @@ impl FromBeBytes for i64 {
     }
 }
 
+impl FromBeBytes for f16 {
+    fn from_be_bytes<T>(bytes: &mut T) -> Self
+    where T: Read {
+        let mut buf = [0u8; 2];
+        bytes.read_exact(&mut buf).unwrap();
+        f16::from_be_bytes(buf)
+    }
+}
+
 impl FromBeBytes for f32 {
     fn from_be_bytes<T>(bytes: &mut T) -> Self
     where T: Read {
@@ -101,6 +116,29 @@ impl FromBeBytes for f64 {
         let mut buf = [0u8; 8];
         bytes.read_exact(&mut buf).unwrap();
         BigEndian::read_f64(&buf)
+    }
+}
+
+impl FromBeBytes for String {
+    fn from_be_bytes<T>(bytes: &mut T) -> Self 
+    where T: Read{
+        let mut buf: Vec<u8> = Vec::new();
+        bytes.read_to_end(&mut buf).unwrap();
+        reverse_bytes_array(&mut buf);
+        String::from_utf8(buf).unwrap_or("error during parsing string".to_string())
+    }
+}
+
+impl FromBeBytes for UTF16String {
+    fn from_be_bytes<T>(bytes: &mut T) -> Self 
+    where T: Read{
+        let mut buf: Vec<u8> = Vec::new();
+        bytes.read_to_end(&mut buf).unwrap();
+        reverse_bytes_array(&mut buf);
+        let u16s = from_u8_vec(&buf).unwrap();
+        UTF16String {
+            inner: String::from_utf16_lossy(&u16s[..])
+        }
     }
 }
 
@@ -177,6 +215,15 @@ impl FromLeBytes for i64 {
     }
 }
 
+impl FromLeBytes for f16 {
+    fn from_le_bytes<T>(bytes: &mut T) -> Self
+    where T: Read {
+        let mut buf = [0u8; 2];
+        bytes.read_exact(&mut buf).unwrap();
+        f16::from_le_bytes(buf)
+    }
+}
+
 impl FromLeBytes for f32 {
     fn from_le_bytes<T>(bytes: &mut T) -> Self
     where T: Read {
@@ -195,6 +242,27 @@ impl FromLeBytes for f64 {
     }
 }
 
+impl FromLeBytes for String {
+    fn from_le_bytes<T>(bytes: &mut T) -> Self 
+    where T: Read{
+        let mut buf: Vec<u8> = Vec::new();
+        bytes.read_to_end(&mut buf).unwrap();
+        String::from_utf8(buf).unwrap_or("error during parsing string".to_string())
+    }
+}
+
+impl FromLeBytes for UTF16String {
+    fn from_le_bytes<T>(bytes: &mut T) -> Self 
+    where T: Read{
+        let mut buf: Vec<u8> = Vec::new();
+        bytes.read_to_end(&mut buf).unwrap();
+        let u16s = from_u8_vec(&buf).unwrap();
+        UTF16String {
+            inner: String::from_utf16_lossy(&u16s[..])
+        }
+    }
+}
+
 pub fn parse_le_value<T>(cur: &mut Cursor<Vec<u8>>) -> T
     where T: FromLeBytes {
         T::from_le_bytes(cur)
@@ -207,7 +275,7 @@ pub fn parse_be_value<T>(cur: &mut Cursor<Vec<u8>>) -> T
     }
 
 pub fn right_shift_bytes_inplace(bytes: &mut Vec<u8>, shift: usize) -> Result<(), &str> {
-    if shift>7 || shift < 1 {
+    if shift > 7 || shift < 1 {
         return Err("Shift must be between 1 and 7");
     } else {
         let mut carry = 0u8;
@@ -234,110 +302,174 @@ pub fn right_shift_bytes(bytes: &Vec<u8>, shift: u8) -> Result<Vec<u8>, &str> {
     Ok(new)
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-    pub enum DataValue {
-        CHAR(String),
-        BYTE(Vec<u8>),
-        UINT64(Vec<u64>),
-        UINT8(Vec<u8>),
-        INT16(Vec<i16>),
-        UINT16(Vec<u16>),
-        INT32(Vec<i32>),
-        UINT32(Vec<u32>), 
-        INT64(Vec<i64>),
-        REAL(Vec<f64>),
+pub fn bytes_and_bits(bytes: &mut Vec<u8>, bits: u32) {
+    // modify in place; this operation can not fail
+    let num_of_bytes = (bits as f32 / 8.0).floor() as usize;
+    let num_of_bits = bits % 8;
+    if num_of_bytes < bytes.len() {
+        bytes[num_of_bytes] = bytes[num_of_bytes] & (2_u8.pow(num_of_bits as u32) - 1);
+        (num_of_bytes + 1..bytes.len()).for_each(|i| bytes[i] = 0);
+    } //  nothing needs to be done if bits is larger than the bytes array
+}
+pub fn reverse_bytes_array(arr: &mut [u8]) {
+    // Reverse the order of the bytes in the array; to decode Be::Utf-16 stirng
+    let mut left: usize = 0;
+    let mut right: usize = arr.len() - 1;
+    while left < right {
+        arr.swap(left, right);
+        left += 1;
+        right -= 1;
     }
+}
 
-    impl TryFrom<DataValue> for String {
-        type Error = &'static str;
-        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
-            match value {
-                DataValue::CHAR(s) => Ok(s),
-                _ => Err("DataValue is not a CHAR")
-            }
+fn from_u8_vec(bytes: &Vec<u8>) -> Result<Vec<u16>, &'static str> {
+    if bytes.len() % 2 != 0 {
+        return Err("Length of bytes must be even");
+    }
+    let result: Vec<u16> = bytes.chunks(2)
+                                .map(|chunk| u16::from_le_bytes(chunk.try_into().unwrap()))
+                                .collect();
+    Ok(result)
+}
+#[derive(Debug, PartialEq, Clone)]
+pub enum DataValue {
+    CHAR(String),
+    STRINGS(Vec<String>),
+    BYTE(Vec<u8>),
+    UINT64(Vec<u64>),
+    UINT8(Vec<u8>),
+    INT8(Vec<i8>),
+    INT16(Vec<i16>),
+    UINT16(Vec<u16>),
+    INT32(Vec<i32>),
+    UINT32(Vec<u32>), 
+    INT64(Vec<i64>),
+    REAL(Vec<f64>),
+    SINGLE(Vec<f32>),
+    FLOAT16(Vec<f16>)
+}
+
+impl TryFrom<DataValue> for String {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::CHAR(s) => Ok(s),
+            _ => Err("DataValue is not a CHAR")
         }
     }
+}
 
-    impl TryFrom<DataValue> for Vec<u8> {
-        type Error = &'static str;
-        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
-            match value {
-                DataValue::BYTE(s) => Ok(s),
-                DataValue::UINT8(s) => Ok(s),
-                _ => Err("DataValue is not a uint8 or byte")
-            }
+impl TryFrom<DataValue> for Vec<u8> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::BYTE(s) => Ok(s),
+            DataValue::UINT8(s) => Ok(s),
+            _ => Err("DataValue is not a uint8 or byte")
         }
     }
+}
 
-    impl TryFrom<DataValue> for Vec<u64> {
-        type Error = &'static str;
-        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
-            match value {
-                DataValue::UINT64(s) => Ok(s),
-                _ => Err("DataValue is not a uint64")
-            }
+impl TryFrom<DataValue> for Vec<u64> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::UINT64(s) => Ok(s),
+            _ => Err("DataValue is not a uint64")
         }
     }
+}
 
-    impl TryFrom<DataValue> for Vec<i16> {
-        type Error = &'static str;
-        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
-            match value {
-                DataValue::INT16(s) => Ok(s),
-                _ => Err("DataValue is not a int16")
-            }
+impl TryFrom<DataValue> for Vec<i16> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::INT16(s) => Ok(s),
+            _ => Err("DataValue is not a int16")
         }
     }
+}
 
-    impl TryFrom<DataValue> for Vec<u16> {
-        type Error = &'static str;
-        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
-            match value {
-                DataValue::UINT16(s) => Ok(s),
-                _ => Err("DataValue is not a uint16")
-            }
+impl TryFrom<DataValue> for Vec<u16> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::UINT16(s) => Ok(s),
+            _ => Err("DataValue is not a uint16")
         }
     }
+}
 
-    impl TryFrom<DataValue> for Vec<i32> {
-        type Error = &'static str;
-        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
-            match value {
-                DataValue::INT32(s) => Ok(s),
-                _ => Err("DataValue is not a int32")
-            }
+impl TryFrom<DataValue> for Vec<i32> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::INT32(s) => Ok(s),
+            _ => Err("DataValue is not a int32")
         }
     }
+}
 
-    impl TryFrom<DataValue> for Vec<u32> {
-        type Error = &'static str;
-        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
-            match value {
-                DataValue::UINT32(s) => Ok(s),
-                _ => Err("DataValue is not a uint32")
-            }
+impl TryFrom<DataValue> for Vec<u32> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::UINT32(s) => Ok(s),
+            _ => Err("DataValue is not a uint32")
         }
     }
+}
 
-    impl TryFrom<DataValue> for Vec<i64> {
-        type Error = &'static str;
-        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
-            match value {
-                DataValue::INT64(s) => Ok(s),
-                _ => Err("DataValue is not a int64")
-            }
+impl TryFrom<DataValue> for Vec<i64> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::INT64(s) => Ok(s),
+            _ => Err("DataValue is not a int64")
         }
     }
+}
 
-    impl TryFrom<DataValue> for Vec<f64> {
-        type Error = &'static str;
-        fn try_from(value: DataValue) -> Result<Self, Self::Error> {
-            match value {
-                DataValue::REAL(s) => Ok(s),
-                _ => Err("DataValue is not a float64")
-            }
+impl TryFrom<DataValue> for Vec<f64> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::REAL(s) => Ok(s),
+            _ => Err("DataValue is not a float64")
         }
     }
+}
+
+impl TryFrom<DataValue> for Vec<f32> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::SINGLE(s) => Ok(s),
+            _ => Err("DataValue is not a float32")
+        }
+    }
+}
+
+impl TryFrom<DataValue> for Vec<f16> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::FLOAT16(s) => Ok(s),
+            _ => Err("DataValue is not a float16")
+        }
+    }
+}
+
+impl TryFrom<DataValue> for Vec<String> {
+    type Error = &'static str;
+    fn try_from(value: DataValue) -> Result<Self, Self::Error> {
+        match value {
+            DataValue::STRINGS(s) => Ok(s),
+            _ => Err("DataValue is not a float16")
+        }
+    }
+}
+
 
 
 
@@ -385,5 +517,14 @@ pub mod serde_tests {
         assert_eq!(vec![64, 96, 128, 0], a);
         let new = right_shift_bytes(&b, 3).unwrap();
         assert_eq!(vec![64, 96, 128, 0], new);
+    }
+
+    #[rstest]
+    fn test_bytes_fn() {
+        let mut a: Vec<u8> = vec![0x01u8, 0x02, 0xff, 0xff];
+        bytes_and_bits(&mut a, 23);
+        assert_eq!(vec![0x01u8, 0x02, 0x7f, 0x00], a);
+        reverse_bytes_array(&mut a);
+        assert_eq!(vec![0x00u8, 0x7f, 0x02, 0x01], a);
     }
 }

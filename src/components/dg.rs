@@ -5,10 +5,12 @@ pub mod datagroup {
     use crate::components::cn::channel::Channel;
     use crate::parser::{get_block_desc_by_name, get_clean_text, get_child_links};
     use crate::components::dx::dataxxx::{VirtualBuf, read_data_block};
+    use crate::data_serde::{DataValue, FromLeBytes, FromBeBytes, UTF16String};
     use std::collections::HashMap;
     use std::io::BufReader;
     use std::fs::File;
     use std::fmt::Display;
+    use half::f16;
 
     type DynError = Box<dyn std::error::Error>;
     #[derive(Debug, Clone, Copy)]
@@ -37,6 +39,69 @@ pub mod datagroup {
             &self.2
         }
 
+        fn gen_value_vec<T>(&self, file: &mut BufReader<File>) -> Result<Vec<T>, DynError> 
+        where T: FromLeBytes+FromBeBytes {
+            let mut v: Vec<T> = Vec::new();
+            for i in 0..self.get_channel_group().get_cycle_count() {
+                let rec_data = self.get_data_group()    
+                                            .get_cg_data(self.get_channel_group().get_record_id(), i, file)
+                                            .ok_or("Invalid record id or cycle count.")?;
+                v.push(self.get_channel().from_bytes::<T>(&rec_data).unwrap());
+            }
+            Ok(v)
+        }
+
+        pub fn yield_channel_data(&self, file: &mut BufReader<File>) -> Result<DataValue, DynError> {
+            let cn = self.get_channel();
+            let bits = cn.get_bit_size();
+            match cn.get_data_type() {
+                 0 | 1 => {
+                    if bits <= 8 {
+                        Ok(DataValue::UINT8(self.gen_value_vec::<u8>(file)?))
+                    } else if bits>8 && bits <= 16 {
+                        Ok(DataValue::UINT16(self.gen_value_vec::<u16>(file)?))
+                    } else if bits>16 && bits <= 32 {
+                        Ok(DataValue::UINT32(self.gen_value_vec::<u32>(file)?))
+                    } else if bits>32 && bits <= 64 {
+                        Ok(DataValue::UINT64(self.gen_value_vec::<u64>(file)?))
+                    } else {
+                        Err("Invalid bit size.".into())
+                    }
+                },
+                2 | 3 => {
+                    if bits <= 8 {
+                        Ok(DataValue::INT8(self.gen_value_vec::<i8>(file)?))
+                    } else if bits>8 && bits <= 16 {
+                        Ok(DataValue::INT16(self.gen_value_vec::<i16>(file)?))
+                    } else if bits>16 && bits <= 32 {
+                        Ok(DataValue::INT32(self.gen_value_vec::<i32>(file)?))
+                    } else if bits>32 && bits <= 64 {
+                        Ok(DataValue::INT64(self.gen_value_vec::<i64>(file)?))
+                    } else {
+                        Err("Invalid bit size.".into())
+                    }
+                },
+                4 | 5 => {
+                    if bits == 16 {
+                        Ok(DataValue::FLOAT16(self.gen_value_vec::<f16>(file)?))
+                    } else if bits == 32 {
+                        Ok(DataValue::SINGLE(self.gen_value_vec::<f32>(file)?))
+                    } else if bits == 64 {
+                        Ok(DataValue::REAL(self.gen_value_vec::<f64>(file)?))
+                    } else {
+                        Err("Invalid bit size.".into())
+                    }
+                },
+                6 | 7 => {
+                    Ok(DataValue::STRINGS(self.gen_value_vec::<String>(file)?))
+                },
+                8 | 9 => {
+                    let s = self.gen_value_vec::<UTF16String>(file)?;
+                    Ok(DataValue::STRINGS(s.into_iter().map(|s| s.inner).collect()))
+                },
+                _ => Err("Invalid data type.".into())
+            }
+        }
     }
 
     pub struct DataGroup{   

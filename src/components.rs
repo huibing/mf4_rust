@@ -73,7 +73,11 @@ pub mod components_test {
         let dg: DataGroup = DataGroup::new(&mut buf, offset).unwrap();
         println!("{}", dg);
         println!("is sorted: {}", dg.is_sorted());
-        let _ = dg.create_map();
+        let channel_map = dg.create_map();
+        println!("{:?}", channel_map.keys().collect::<Vec<&String>>());
+        let cl = channel_map.get("ASAM.M.SCALAR.UBYTE.RAT_FUNC.IDENT.STATUS_STRING").unwrap();
+        let value = cl.yield_channel_data(&mut buf).unwrap();
+        println!("{:?}", value);
     }
 
     #[rstest]
