@@ -406,7 +406,6 @@ pub mod parser {
     use crate::block::{BlockDesc, BlockInfo};
     use crate::components::cg::channelgroup::ChannelGroup;
     use crate::data_serde::DataValue;
-    use owning_ref::OwningRef;
     use rust_embed::RustEmbed;
     use std::io::{BufReader, Seek, Read, SeekFrom};
     use std::path::PathBuf;
@@ -678,10 +677,13 @@ pub mod parser {
         }
     }
 
+    /// user can use this struct to get data from mdf file
+    /// This struct contains cache and bufreader, so mut is necessary
+    /// Try not to return any reference in this struct's methods
     pub struct MdfWrapper <'me, 'buf>{
-        pub mdf: &'me Mdf,
-        pub channel_map: HashMap<String, ChannelLink<'me>>,
-        pub buf: &'buf mut BufReader<File>,
+        mdf: &'me Mdf,
+        channel_map: HashMap<String, ChannelLink<'me>>,
+        buf: &'buf mut BufReader<File>,
     }
     impl <'me, 'buf> MdfWrapper <'me, 'buf> {
         pub fn new(file: &'buf mut BufReader<File>, mdf: &'me Mdf) -> Result<Self, DynError> {
