@@ -17,6 +17,7 @@ pub mod components_test {
     use crate::components::cc::conversion::*;
     use crate::components::dg::datagroup::DataGroup;
     use super::dx::dataxxx::{DataLink, VirtualBuf}; 
+    use crate::data_serde::DataValue;
     use rust_embed::RustEmbed;
     use std::io::BufReader;
     use std::fs::File;
@@ -63,7 +64,12 @@ pub mod components_test {
         let dg: DataGroup = DataGroup::new(&mut buf, offset).unwrap();
         println!("{}", dg);
         println!("is sorted: {}", dg.is_sorted());
-        let _ = dg.create_map();
+        let map = dg.create_map();
+        println!("{:?}", map.keys().collect::<Vec<&String>>());
+        let var = map.get("$CalibrationLog").unwrap();
+        println!("{:?}", var.get_channel());
+        let value = var.yield_channel_data(&mut buf).unwrap();
+        println!("{:?}", value);
     }
 
     #[rstest]
@@ -76,8 +82,17 @@ pub mod components_test {
         let channel_map = dg.create_map();
         println!("{:?}", channel_map.keys().collect::<Vec<&String>>());
         let cl = channel_map.get("ASAM.M.SCALAR.UBYTE.RAT_FUNC.IDENT.STATUS_STRING").unwrap();
+        println!("{}", cl.get_channel());
         let value = cl.yield_channel_data(&mut buf).unwrap();
-        println!("{:?}", value);
+        //println!("{:?}", value);
+        let raw = cl.get_channel().get_data_raw(&mut buf, cl.get_data_group(), cl.get_channel_group()).unwrap();
+        assert_eq!(value, raw);
+        let value_conv = if let DataValue::UINT8(val) = value {
+            val.iter().map(|x| cl.get_channel().get_conversion().transform_value(*x)).collect::<Vec<f64>>()
+        } else {
+            vec![]
+        };
+        println!("{:?}", value_conv);
     }
 
     #[rstest]

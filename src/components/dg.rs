@@ -22,7 +22,6 @@ pub mod datagroup {
         UINT64,
     }
 
-
     pub struct ChannelLink<'a>
         (&'a Channel, &'a ChannelGroup, &'a DataGroup);
 
@@ -52,8 +51,9 @@ pub mod datagroup {
         }
 
         pub fn yield_channel_data(&self, file: &mut BufReader<File>) -> Result<DataValue, DynError> {
-            let cn = self.get_channel();
-            let bits = cn.get_bit_size();
+            /* same as Channel.get_data_raw */
+            let cn: &Channel = self.get_channel();
+            let bits: u32 = cn.get_bit_size();
             match cn.get_data_type() {
                  0 | 1 => {
                     if bits <= 8 {
@@ -100,6 +100,19 @@ pub mod datagroup {
                     Ok(DataValue::STRINGS(s.into_iter().map(|s| s.inner).collect()))
                 },
                 _ => Err("Invalid data type.".into())
+            }
+        }
+
+        pub fn get_master_channel_vec(&self, file: &mut BufReader<File>) -> Result<DataValue, DynError> {
+            if self.get_channel().is_master() {
+                // not possible if the channel link is build from current API
+                Ok(self.yield_channel_data(file)?)
+            } else {
+                let cg: &ChannelGroup = self.get_channel_group();
+                let dg: &DataGroup = self.get_data_group();
+                let master_cn = cg.get_master()
+                                            .ok_or::<DynError>("Cannot find master channel".into())?;
+                Ok(master_cn.get_data_raw(file, dg, cg)?)
             }
         }
     }

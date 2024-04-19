@@ -1,6 +1,5 @@
 use std::io::{Read, Cursor};
 use byteorder::{ByteOrder, LittleEndian, BigEndian};
-use serde::{Deserialize, Serialize};
 use half::f16;
 
 pub struct UTF16String {

@@ -405,6 +405,8 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
 pub mod parser {
     use crate::block::{BlockDesc, BlockInfo};
     use crate::components::cg::channelgroup::ChannelGroup;
+    use crate::data_serde::DataValue;
+    use owning_ref::OwningRef;
     use rust_embed::RustEmbed;
     use std::io::{BufReader, Seek, Read, SeekFrom};
     use std::path::PathBuf;
@@ -648,35 +650,59 @@ pub mod parser {
         }
             
     }
-        pub struct Mdf {
-            pub mdfinfo: MdfInfo,
-            pub data: MdfData
-        }
-    
-        impl Mdf {
-            pub fn new(file: PathBuf) -> Result<Self, DynError> {
-                let mut buf = BufReader::new(File::open(file)?);
-                let mdfinfo = MdfInfo::new(&mut buf)?;
-                let data = MdfData::new(&mut buf, mdfinfo.first_dg_offset)?;
-                Ok(Self{
-                    mdfinfo,
-                    data
-                })
-            }
-    
-            pub fn generate_channel_map(&self) -> HashMap<String, ChannelLink> {
-                self.data.generate_channel_map()
-            }
-    
-            pub fn get_all_channel_names(&self, c_map: &HashMap<String, ChannelLink>) -> Vec<String> {
-                c_map.iter().map(|(k, _)| k.clone()).collect()
-            }
+    pub struct Mdf {
+        pub mdfinfo: MdfInfo,
+        pub data: MdfData
+    }
 
-            pub fn check_duplicate_channel(&self) -> Option<Vec<String>> {
-                self.data.check_duplicate_channel()
-            }
+    impl Mdf {
+        pub fn new(file: &mut BufReader<File>) -> Result<Self, DynError> {
+            let mdfinfo = MdfInfo::new(file)?;
+            let data = MdfData::new(file, mdfinfo.first_dg_offset)?;
+            Ok(Self{
+                mdfinfo,
+                data,
+            })
+        }
+
+        pub fn generate_channel_map(&self) -> HashMap<String, ChannelLink> {
+            self.data.generate_channel_map()
+        }
+
+        pub fn get_all_channel_names(&self, c_map: &HashMap<String, ChannelLink>) -> Vec<String> {
+            c_map.iter().map(|(k, _)| k.clone()).collect()
+        }
+
+        pub fn check_duplicate_channel(&self) -> Option<Vec<String>> {
+            self.data.check_duplicate_channel()
         }
     }
+
+    pub struct MdfWrapper <'me, 'buf>{
+        pub mdf: &'me Mdf,
+        pub channel_map: HashMap<String, ChannelLink<'me>>,
+        pub buf: &'buf mut BufReader<File>,
+    }
+    impl <'me, 'buf> MdfWrapper <'me, 'buf> {
+        pub fn new(file: &'buf mut BufReader<File>, mdf: &'me Mdf) -> Result<Self, DynError> {
+            let channel_map = mdf.generate_channel_map();
+            Ok(Self{
+                mdf,
+                channel_map,
+                buf: file,
+            })
+        }
+
+        pub fn get_channel_names(&self) -> Vec<String> {
+            self.channel_map.iter().map(|(k, _)| k.clone()).collect()
+        }
+
+        pub fn get_channel_data(&mut self, channel_name: &str) -> Option<DataValue>{
+            let cl = self.channel_map.get(channel_name).unwrap();
+            Some(cl.yield_channel_data(self.buf).ok()?)
+        }
+    }
+}
 
     
 
@@ -807,13 +833,14 @@ pub mod parser_test {
     #[test]
     fn test_mdf_new() {
         let file = PathBuf::from("test/1.mf4");
-        let mdf = Mdf::new(file).unwrap();
+        let mut buf = BufReader::new(std::fs::File::open(file).unwrap());
+        let mdf = Mdf::new(&mut buf).unwrap();
         let channel_map = mdf.generate_channel_map();
         assert!(mdf.check_duplicate_channel().is_none());
         // print out channel group info
         for cg in mdf.data.get_all_channel_groups() {
             if cg.get_master().is_none() {
-                println!("Channel group {}%%{}has no master channel", cg.get_acq_name(), cg.get_acq_source());
+                println!("Channel group {}%%{} has no master channel", cg.get_acq_name(), cg.get_acq_source());
             } else {
                 let master_cn = cg.get_master().unwrap();
                 println!("Channel group {}%%{} has one master channel {}",
@@ -833,5 +860,25 @@ pub mod parser_test {
         let cn = channel_map.get("$CalibrationLog").unwrap().get_channel();
         println!("Channel $CalibrationLog sync_type is {:?}, cn_type is {}, cn_data_type is {}",
             cn.get_sync_type(), cn.get_cn_type(), cn.get_data_type());
+        let cl = channel_map.get("$CalibrationLog").unwrap();
+        let channel_data = cl.yield_channel_data(&mut buf).unwrap();
+        let master_data = cl.get_master_channel_vec(&mut buf).unwrap();
+        println!("master data is {:?}", master_data);
+        println!("channel data is {:?}", channel_data);
+        // $CalibrationLog
+    }
+
+    #[test]
+    fn test_mdf_wrapper_new() {
+        let mut buf = BufReader::new(std::fs::File::open("test/1.mf4").unwrap());
+        let mdf = Mdf::new(&mut buf).unwrap();
+        let mut wrapper = MdfWrapper::new(&mut buf, &mdf).unwrap();
+        println!("{:?}", wrapper.get_channel_names());
+
+        let channel_data = wrapper.get_channel_data("$CalibrationLog").unwrap();
+        println!("{:?}", channel_data);
+
+        let channel_data = wrapper.get_channel_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();
+        println!("{:?}", channel_data);
     }
 }

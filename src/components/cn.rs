@@ -2,12 +2,15 @@ pub mod channel {
     use std::io::{Cursor, BufReader};
     use std::fs::File;
     use std::fmt::Display;
+    use half::f16;
+
     use crate::block::BlockDesc;
+    use crate::components::dg::datagroup::DataGroup;
     use crate::parser::{get_clean_text, get_block_desc_by_name};
     use crate::components::cc::conversion::Conversion;
     use crate::components::si::sourceinfo::SourceInfo;
-    use crate::components::dg::datagroup::DataGroup;
-    use crate::data_serde::{FromBeBytes, FromLeBytes, right_shift_bytes, bytes_and_bits};
+    use crate::components::cg::channelgroup::ChannelGroup;
+    use crate::data_serde::{bytes_and_bits, right_shift_bytes, DataValue, FromBeBytes, FromLeBytes, UTF16String};
 
     
     type DynError = Box<dyn std::error::Error>;
@@ -21,20 +24,6 @@ pub mod channel {
     }
 
     #[derive(Debug, Clone)]
-    enum CnDataType{
-        LeUnsigned,
-        LeSigned,
-        BeUnsigned,
-        BeSigned,
-        LeFloat,
-        BeFloat,
-        Utf8Str,
-        BeUtf16Str,
-        LeUtf16Str,
-        NotImplemented
-    }
-
-    #[derive(Debug, Clone)]
     pub struct Channel {
         name: String,
         source: SourceInfo,
@@ -44,7 +33,6 @@ pub mod channel {
         cn_type: u8,
         sync_type: SyncType,
         data_type: u8,
-        cn_data_type: CnDataType,
         bit_offset: u8,
         byte_offset: u32,
         bit_count: u32,
@@ -82,18 +70,6 @@ pub mod channel {
             let byte_offset: u32 = info.get_data_value_first("cn_byte_offset").ok_or("cn_byte_offset not found")?;
             let bit_count: u32 = info.get_data_value_first("cn_bit_count").ok_or("cn_bit_count not found")?;
             let bytes_num: u32 = (bit_count as f32 / 8.0).ceil() as u32;
-            let cn_data_type = match data_type {
-                0 => CnDataType::LeUnsigned,
-                1 => CnDataType::BeUnsigned,
-                2 => CnDataType::LeSigned,
-                3 => CnDataType::BeSigned,
-                4 => CnDataType::LeFloat,
-                5 => CnDataType::BeFloat,
-                6|7 => CnDataType::Utf8Str,
-                8 => CnDataType::LeUtf16Str,
-                9 => CnDataType::BeUtf16Str,
-                _ => CnDataType::NotImplemented,
-            };
             Ok(Self {
                 name,
                 source,
@@ -103,7 +79,6 @@ pub mod channel {
                 cn_type,
                 sync_type,
                 data_type,
-                cn_data_type,
                 bit_offset,
                 byte_offset,
                 bit_count,
@@ -182,6 +157,68 @@ pub mod channel {
 
         pub fn is_master(&self) -> bool {
             self.master
+        }
+
+        pub fn get_data_raw(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
+            let bits: u32 = self.get_bit_size();
+            match self.get_data_type() {
+                 0 | 1 => {
+                    if bits <= 8 {
+                        Ok(DataValue::UINT8(self.gen_value_vec::<u8>(file, dg, cg)?))
+                    } else if bits>8 && bits <= 16 {
+                        Ok(DataValue::UINT16(self.gen_value_vec::<u16>(file, dg, cg)?))
+                    } else if bits>16 && bits <= 32 {
+                        Ok(DataValue::UINT32(self.gen_value_vec::<u32>(file, dg, cg)?))
+                    } else if bits>32 && bits <= 64 {
+                        Ok(DataValue::UINT64(self.gen_value_vec::<u64>(file, dg, cg)?))
+                    } else {
+                        Err("Invalid bit size.".into())
+                    }
+                },
+                2 | 3 => {
+                    if bits <= 8 {
+                        Ok(DataValue::INT8(self.gen_value_vec::<i8>(file, dg, cg)?))
+                    } else if bits>8 && bits <= 16 {
+                        Ok(DataValue::INT16(self.gen_value_vec::<i16>(file, dg, cg)?))
+                    } else if bits>16 && bits <= 32 {
+                        Ok(DataValue::INT32(self.gen_value_vec::<i32>(file, dg, cg)?))
+                    } else if bits>32 && bits <= 64 {
+                        Ok(DataValue::INT64(self.gen_value_vec::<i64>(file, dg, cg)?))
+                    } else {
+                        Err("Invalid bit size.".into())
+                    }
+                },
+                4 | 5 => {
+                    if bits == 16 {
+                        Ok(DataValue::FLOAT16(self.gen_value_vec::<f16>(file, dg, cg)?))
+                    } else if bits == 32 {
+                        Ok(DataValue::SINGLE(self.gen_value_vec::<f32>(file, dg, cg)?))
+                    } else if bits == 64 {
+                        Ok(DataValue::REAL(self.gen_value_vec::<f64>(file, dg, cg)?))
+                    } else {
+                        Err("Invalid bit size.".into())
+                    }
+                },
+                6 | 7 => {
+                    Ok(DataValue::STRINGS(self.gen_value_vec::<String>(file, dg, cg)?))
+                },
+                8 | 9 => {
+                    let s: Vec<UTF16String> = self.gen_value_vec::<UTF16String>(file, dg, cg)?;
+                    Ok(DataValue::STRINGS(s.into_iter().map(|s| s.inner).collect()))
+                },
+                _ => Err("Invalid data type.".into())
+            }
+        }
+
+        fn gen_value_vec<T>(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<Vec<T>, DynError> 
+        where T: FromBeBytes + FromLeBytes {  /* function used to read record bytes into channel value*/
+            let mut values: Vec<T> = Vec::new();
+            for i in 0..cg.get_cycle_count() {
+                let rec_data = dg.get_cg_data(cg.get_record_id(), i, file)
+                                          .ok_or("Invalid record id or cycle count.")?;
+                values.push(self.from_bytes::<T>(&rec_data)?);
+            }
+            Ok(values)
         }
     }
 
