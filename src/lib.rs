@@ -592,43 +592,43 @@ pub mod parser {
             Ok(text)
         }
     }
-
-    pub struct MdfData{
-        data_groups: Vec<DataGroup>
+    pub struct Mdf {
+        pub mdfinfo: MdfInfo,
+        pub data: Vec<DataGroup>
     }
 
-    impl MdfData {
-        pub fn new(file: &mut BufReader<File>, first_dg_offset: u64) -> Result<Self, DynError> {
-            let dg_links = get_child_links(file, first_dg_offset, "DG")?;
-            let mut data_groups:Vec<DataGroup> = Vec::new();
+    impl Mdf {
+        pub fn new(file: &mut BufReader<File>) -> Result<Self, DynError> {
+            let mdfinfo = MdfInfo::new(file)?;
+            let mut data = Vec::new();
+            let dg_links = get_child_links(file, mdfinfo.first_dg_offset, "DG")?;
             dg_links.iter().for_each(|dg_offset| {
                 if let Ok(dg) = DataGroup::new(file, *dg_offset) {
-                    data_groups.push(dg);
+                    data.push(dg);
                 } else {
-                    println!("Error: failed to create DataGroup at offset: {}", dg_offset);
-                }
-            });
-            let mut channel_maps: HashMap<String, ChannelLink> = HashMap::new();
-            for dg in data_groups.iter() {
-                channel_maps.extend(dg.create_map());
-            }
+                    println!("Error: failed to create DataGroup at offset: {}", dg_offset);   // todo: log instead of println!
+                }});
             Ok(Self{
-                data_groups
+                mdfinfo,
+                data,
             })
         }
 
-        fn generate_channel_map(&self) -> HashMap<String, ChannelLink> {
-            /* TODO:  */
-            let mut channel_maps: HashMap<String, ChannelLink> = HashMap::new();
-            for dg in self.data_groups.iter() {
-                channel_maps.extend(dg.create_map());
+        pub fn generate_channel_map(&self) -> HashMap<String, ChannelLink> {
+            let mut map = HashMap::new();
+            for dg in self.data.iter() {
+                map.extend(dg.create_map());
             }
-            channel_maps
+            map
         }
 
-        fn check_duplicate_channel(&self) -> Option<Vec<String>> {
+        pub fn get_all_channel_names(&self) -> Vec<String> {
+            self.data.iter().flat_map(|dg| dg.get_all_channel_names()).collect()
+        }
+
+        pub fn check_duplicate_channel(&self) -> Option<Vec<String>> {
             let mut dup_channel_list: Vec<String> = Vec::new();
-            let v:Vec<Vec<String>> = self.data_groups.iter().map(|dg| dg.get_all_channel_names()).collect();
+            let v:Vec<Vec<String>> = self.data.iter().map(|dg| dg.get_all_channel_names()).collect();
             for i in 0..v.len(){
                 let v1 = v[i].iter().collect::<HashSet<&String>>();
                 for j in i+1..v.len() {
@@ -642,50 +642,26 @@ pub mod parser {
             } else {
                 None
             }
-        } // fn check_duplicate_channel
+        }
 
         pub fn get_all_channel_groups(&self) -> Vec<&ChannelGroup> {
-            self.data_groups.iter().flat_map(|dg| dg.get_channle_groups()).collect()
-        }
-            
-    }
-    pub struct Mdf {
-        pub mdfinfo: MdfInfo,
-        pub data: MdfData
-    }
-
-    impl Mdf {
-        pub fn new(file: &mut BufReader<File>) -> Result<Self, DynError> {
-            let mdfinfo = MdfInfo::new(file)?;
-            let data = MdfData::new(file, mdfinfo.first_dg_offset)?;
-            Ok(Self{
-                mdfinfo,
-                data,
-            })
+            self.data.iter().flat_map(|dg| dg.get_channle_groups()).collect()
         }
 
-        pub fn generate_channel_map(&self) -> HashMap<String, ChannelLink> {
-            self.data.generate_channel_map()
-        }
-
-        pub fn get_all_channel_names(&self, c_map: &HashMap<String, ChannelLink>) -> Vec<String> {
-            c_map.iter().map(|(k, _)| k.clone()).collect()
-        }
-
-        pub fn check_duplicate_channel(&self) -> Option<Vec<String>> {
-            self.data.check_duplicate_channel()
+        pub fn get_time_stamp(&self) -> String {
+            self.mdfinfo.date_time.to_owned()
         }
     }
 
     /// user can use this struct to get data from mdf file
     /// This struct contains cache and bufreader, so mut is necessary
     /// Try not to return any reference in this struct's methods
-    pub struct MdfWrapper <'me, 'buf>{
+    pub struct Mf4Wrapper <'me, 'buf>{
         mdf: &'me Mdf,
         channel_map: HashMap<String, ChannelLink<'me>>,
         buf: &'buf mut BufReader<File>,
     }
-    impl <'me, 'buf> MdfWrapper <'me, 'buf> {
+    impl <'me, 'buf> Mf4Wrapper <'me, 'buf> {
         pub fn new(file: &'buf mut BufReader<File>, mdf: &'me Mdf) -> Result<Self, DynError> {
             let channel_map = mdf.generate_channel_map();
             Ok(Self{
@@ -700,8 +676,13 @@ pub mod parser {
         }
 
         pub fn get_channel_data(&mut self, channel_name: &str) -> Option<DataValue>{
-            let cl = self.channel_map.get(channel_name).unwrap();
+            let cl = self.channel_map.get(channel_name)?;
             Some(cl.yield_channel_data(self.buf).ok()?)
+        }
+
+        pub fn get_channel_master_data(&mut self, channel_name: &str) -> Option<DataValue> {
+            let cl = self.channel_map.get(channel_name)?;
+            Some(cl.get_master_channel_data(self.buf).ok()?)
         }
     }
 }
@@ -840,7 +821,7 @@ pub mod parser_test {
         let channel_map = mdf.generate_channel_map();
         assert!(mdf.check_duplicate_channel().is_none());
         // print out channel group info
-        for cg in mdf.data.get_all_channel_groups() {
+        for cg in mdf.get_all_channel_groups() {
             if cg.get_master().is_none() {
                 println!("Channel group {}%%{} has no master channel", cg.get_acq_name(), cg.get_acq_source());
             } else {
@@ -852,7 +833,7 @@ pub mod parser_test {
             }
         }
         // print out channel info
-        for cn in mdf.get_all_channel_names(&channel_map) {
+        for cn in mdf.get_all_channel_names() {
             let cn_info = channel_map.get(&cn).unwrap().get_channel();
             println!("Channel {} sync_type is {:?}, cn_type is {}, cn_data_type is {}", 
             cn, cn_info.get_sync_type(), cn_info.get_cn_type(), cn_info.get_data_type());
@@ -864,7 +845,7 @@ pub mod parser_test {
             cn.get_sync_type(), cn.get_cn_type(), cn.get_data_type());
         let cl = channel_map.get("$CalibrationLog").unwrap();
         let channel_data = cl.yield_channel_data(&mut buf).unwrap();
-        let master_data = cl.get_master_channel_vec(&mut buf).unwrap();
+        let master_data = cl.get_master_channel_data(&mut buf).unwrap();
         println!("master data is {:?}", master_data);
         println!("channel data is {:?}", channel_data);
         // $CalibrationLog
@@ -874,7 +855,7 @@ pub mod parser_test {
     fn test_mdf_wrapper_new() {
         let mut buf = BufReader::new(std::fs::File::open("test/1.mf4").unwrap());
         let mdf = Mdf::new(&mut buf).unwrap();
-        let mut wrapper = MdfWrapper::new(&mut buf, &mdf).unwrap();
+        let mut wrapper = Mf4Wrapper::new(&mut buf, &mdf).unwrap();
         println!("{:?}", wrapper.get_channel_names());
 
         let channel_data = wrapper.get_channel_data("$CalibrationLog").unwrap();

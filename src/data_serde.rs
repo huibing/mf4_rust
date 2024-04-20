@@ -429,11 +429,22 @@ impl TryFrom<DataValue> for Vec<i64> {
     }
 }
 
+// special cases for f64; need a conveient way to convert any num to f64
 impl TryFrom<DataValue> for Vec<f64> {
     type Error = &'static str;
     fn try_from(value: DataValue) -> Result<Self, Self::Error> {
         match value {
             DataValue::REAL(s) => Ok(s),
+            DataValue::FLOAT16(s) => Ok(s.into_iter().map(|f| f.to_f64()).collect()),
+            DataValue::SINGLE(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
+            DataValue::INT16(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
+            DataValue::UINT16(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
+            DataValue::INT32(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
+            DataValue::UINT32(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
+            DataValue::INT64(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
+            DataValue::UINT64(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
+            DataValue::INT8(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
+            DataValue::UINT8(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
             _ => Err("DataValue is not a float64")
         }
     }

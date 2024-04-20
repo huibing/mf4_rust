@@ -103,7 +103,7 @@ pub mod datagroup {
             }
         }
 
-        pub fn get_master_channel_vec(&self, file: &mut BufReader<File>) -> Result<DataValue, DynError> {
+        pub fn get_master_channel_data(&self, file: &mut BufReader<File>) -> Result<DataValue, DynError> {
             if self.get_channel().is_master() {
                 // not possible if the channel link is build from current API
                 Ok(self.yield_channel_data(file)?)
@@ -112,7 +112,7 @@ pub mod datagroup {
                 let dg: &DataGroup = self.get_data_group();
                 let master_cn = cg.get_master()
                                             .ok_or::<DynError>("Cannot find master channel".into())?;
-                Ok(master_cn.get_data_raw(file, dg, cg)?)
+                Ok(master_cn.get_data(file, dg, cg)?)
             }
         }
     }

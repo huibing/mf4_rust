@@ -31,6 +31,22 @@ pub mod conversion {
         NotImplemented   // and error condition
     }
 
+    impl CcType {
+        pub fn is_num(&self) -> bool {
+            // the target type of this conversion is numeric
+            match self {
+                CcType::OneToOne => true,
+                CcType::Linear(_) => true,
+                CcType::Rational(_) => true,
+                CcType::TableInt(_) => true,
+                CcType::Table(_) => true,
+                CcType::ValueRange(_) => true,
+                CcType::Text2Value(_) => true,
+                _ => false
+            }
+        }
+    }
+
     fn to_f64(v: u64) -> f64 {
         // change to raw bytes
         let bytes = v.to_le_bytes();

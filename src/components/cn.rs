@@ -7,7 +7,7 @@ pub mod channel {
     use crate::block::BlockDesc;
     use crate::components::dg::datagroup::DataGroup;
     use crate::parser::{get_clean_text, get_block_desc_by_name};
-    use crate::components::cc::conversion::Conversion;
+    use crate::components::cc::conversion::{CcType, Conversion};
     use crate::components::si::sourceinfo::SourceInfo;
     use crate::components::cg::channelgroup::ChannelGroup;
     use crate::data_serde::{bytes_and_bits, right_shift_bytes, DataValue, FromBeBytes, FromLeBytes, UTF16String};
@@ -210,6 +210,16 @@ pub mod channel {
             }
         }
 
+        pub fn get_data(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
+            let data_raw = self.get_data_raw(file, dg, cg)?;
+            let float_data: Vec<f64> = data_raw.try_into()?;
+            if self.get_conversion().get_cc_type().is_num() {
+                Ok(DataValue::REAL(float_data.into_iter().map(|f| self.get_conversion().transform_value(f)).collect()))
+            } else {
+                Ok(DataValue::STRINGS(float_data.into_iter().map(|f| self.get_conversion().convert_to_text(file, f).unwrap()).collect()))  // todo: remove unwrap handle errors
+            }
+        }
+
         fn gen_value_vec<T>(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<Vec<T>, DynError> 
         where T: FromBeBytes + FromLeBytes {  /* function used to read record bytes into channel value*/
             let mut values: Vec<T> = Vec::new();
@@ -220,6 +230,7 @@ pub mod channel {
             }
             Ok(values)
         }
+
     }
 
     impl Display for Channel {
