@@ -410,6 +410,7 @@ pub mod parser {
     use std::io::{BufReader, Seek, Read, SeekFrom};
     use std::path::PathBuf;
     use std::fs::File;
+    use std::cell::RefCell;
     use byteorder::{LittleEndian, ByteOrder};
     use std::collections::{HashMap, HashSet};
     use chrono::DateTime;
@@ -662,12 +663,12 @@ pub mod parser {
         buf: &'buf mut BufReader<File>,
     }
     impl <'me, 'buf> Mf4Wrapper <'me, 'buf> {
-        pub fn new(file: &'buf mut BufReader<File>, mdf: &'me Mdf) -> Result<Self, DynError> {
-            let channel_map = mdf.generate_channel_map();
+        pub fn new(buf: &'buf mut BufReader<File>, mdf: &'me Mdf) -> Result<Self, DynError> {
+            let channel_map: HashMap<String, ChannelLink<'me>> = mdf.generate_channel_map();
             Ok(Self{
                 mdf,
                 channel_map,
-                buf: file,
+                buf,
             })
         }
 
@@ -818,6 +819,7 @@ pub mod parser_test {
         let file = PathBuf::from("test/1.mf4");
         let mut buf = BufReader::new(std::fs::File::open(file).unwrap());
         let mdf = Mdf::new(&mut buf).unwrap();
+        let mut wrapper = Mf4Wrapper::new(&mut buf, &mdf).unwrap();
         let channel_map = mdf.generate_channel_map();
         assert!(mdf.check_duplicate_channel().is_none());
         // print out channel group info
@@ -844,7 +846,7 @@ pub mod parser_test {
         println!("Channel $CalibrationLog sync_type is {:?}, cn_type is {}, cn_data_type is {}",
             cn.get_sync_type(), cn.get_cn_type(), cn.get_data_type());
         let cl = channel_map.get("$CalibrationLog").unwrap();
-        let channel_data = cl.yield_channel_data(&mut buf).unwrap();
+        let channel_data = wrapper.get_channel_data("$CalibrationLog");
         let master_data = cl.get_master_channel_data(&mut buf).unwrap();
         println!("master data is {:?}", master_data);
         println!("channel data is {:?}", channel_data);
