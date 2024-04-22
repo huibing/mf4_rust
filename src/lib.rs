@@ -393,7 +393,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
         }
         pub fn get_data_value_first<T>(&self, data_name: &str) -> Option<T>
         where Vec<T>: TryFrom<DataValue, Error = &'static str> , T: Clone,{
-            let data_vec: Vec<T> = self.get_data_value_copy(data_name)?.try_into().unwrap();
+            let data_vec: Vec<T> = self.get_data_value_copy(data_name)?.try_into().ok()?;
             Some(data_vec[0].clone())
         }
         pub fn get_id(&self) -> &String {
@@ -411,6 +411,7 @@ pub mod parser {
     use std::path::PathBuf;
     use std::fs::File;
     use std::cell::RefCell;
+    use self_cell::self_cell;
     use byteorder::{LittleEndian, ByteOrder};
     use std::collections::{HashMap, HashSet};
     use chrono::DateTime;
@@ -654,38 +655,56 @@ pub mod parser {
         }
     }
 
-    /// user can use this struct to get data from mdf file
-    /// This struct contains cache and bufreader, so mut is necessary
-    /// Try not to return any reference in this struct's methods
-    pub struct Mf4Wrapper <'me, 'buf>{
-        mdf: &'me Mdf,
-        channel_map: HashMap<String, ChannelLink<'me>>,
-        buf: &'buf mut BufReader<File>,
-    }
-    impl <'me, 'buf> Mf4Wrapper <'me, 'buf> {
-        pub fn new(buf: &'buf mut BufReader<File>, mdf: &'me Mdf) -> Result<Self, DynError> {
-            let channel_map: HashMap<String, ChannelLink<'me>> = mdf.generate_channel_map();
-            Ok(Self{
-                mdf,
-                channel_map,
-                buf,
-            })
+    struct ChannelMap<'a> (pub HashMap<String, ChannelLink<'a>>);
+    self_cell!(
+        pub struct Mf4Wrapper{
+            owner: (Mdf, RefCell<BufReader<File>>),
+            #[covariant]
+            dependent: ChannelMap,
+        }
+        
+    );
+    impl  Mf4Wrapper {
+        pub fn from(file: PathBuf) -> Result<Self, DynError> {
+            let buf = RefCell::new(BufReader::new(File::open(file)?));
+            let mdf = Mdf::new(&mut buf.borrow_mut())?;
+            Ok(Mf4Wrapper::new(
+                (mdf, buf),
+                |owner| ChannelMap(owner.0.generate_channel_map()),
+            ))
         }
 
         pub fn get_channel_names(&self) -> Vec<String> {
-            self.channel_map.iter().map(|(k, _)| k.clone()).collect()
+            self.borrow_dependent().0.iter().map(|(k, _)| k.clone()).collect()
         }
 
-        pub fn get_channel_data(&mut self, channel_name: &str) -> Option<DataValue>{
-            let cl = self.channel_map.get(channel_name)?;
-            Some(cl.yield_channel_data(self.buf).ok()?)
+        pub fn get_channel_data(&self, channel_name: &str) -> Option<DataValue>{
+            let cl = self.borrow_dependent().0.get(channel_name)?;
+            Some(cl.get_channel().get_data(&mut *self.borrow_owner().1.borrow_mut(),
+                 cl.get_data_group(), cl.get_channel_group()).ok()?)
         }
 
-        pub fn get_channel_master_data(&mut self, channel_name: &str) -> Option<DataValue> {
-            let cl = self.channel_map.get(channel_name)?;
-            Some(cl.get_master_channel_data(self.buf).ok()?)
+        pub fn get_channel_master_data(&self, channel_name: &str) -> Option<DataValue> {
+            let cl = self.borrow_dependent().0.get(channel_name)?;
+            Some(cl.get_master_channel_data(&mut *self.borrow_owner().1.borrow_mut()).ok()?)
         }
+
+        pub fn get_all_channel_groups(&self) -> Vec<&ChannelGroup> {
+            self.borrow_owner().0.get_all_channel_groups()
+        }
+
+        pub fn get_time_stamp(&self) -> String {
+            self.borrow_owner().0.get_time_stamp()
+        }
+
+        pub fn get_channel_map(&self) -> &HashMap<String, ChannelLink> {
+            &self.borrow_dependent().0
+        }
+
+        
     }
+    
+    
 }
 
     
@@ -819,7 +838,7 @@ pub mod parser_test {
         let file = PathBuf::from("test/1.mf4");
         let mut buf = BufReader::new(std::fs::File::open(file).unwrap());
         let mdf = Mdf::new(&mut buf).unwrap();
-        let mut wrapper = Mf4Wrapper::new(&mut buf, &mdf).unwrap();
+        let wrapper = Mf4Wrapper::from(PathBuf::from("test/1.mf4")).unwrap();
         let channel_map = mdf.generate_channel_map();
         assert!(mdf.check_duplicate_channel().is_none());
         // print out channel group info
@@ -855,12 +874,11 @@ pub mod parser_test {
 
     #[test]
     fn test_mdf_wrapper_new() {
-        let mut buf = BufReader::new(std::fs::File::open("test/1.mf4").unwrap());
-        let mdf = Mdf::new(&mut buf).unwrap();
-        let mut wrapper = Mf4Wrapper::new(&mut buf, &mdf).unwrap();
+        let wrapper = Mf4Wrapper::from(PathBuf::from("test/1.mf4")).unwrap();
         println!("{:?}", wrapper.get_channel_names());
 
         let channel_data = wrapper.get_channel_data("$CalibrationLog").unwrap();
+                                             //.unwrap_or(crate::data_serde::DataValue::CHAR("Error".to_string()));
         println!("{:?}", channel_data);
 
         let channel_data = wrapper.get_channel_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();

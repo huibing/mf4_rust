@@ -348,6 +348,16 @@ pub enum DataValue {
     FLOAT16(Vec<f16>)
 }
 
+impl DataValue {
+    pub fn is_num(&self) -> bool {
+        match self {
+            &DataValue::CHAR(_) | &DataValue::STRINGS(_) => false,
+            _ => true
+        }
+    }
+
+}
+
 impl TryFrom<DataValue> for String {
     type Error = &'static str;
     fn try_from(value: DataValue) -> Result<Self, Self::Error> {

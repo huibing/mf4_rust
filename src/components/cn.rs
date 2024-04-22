@@ -7,7 +7,7 @@ pub mod channel {
     use crate::block::BlockDesc;
     use crate::components::dg::datagroup::DataGroup;
     use crate::parser::{get_clean_text, get_block_desc_by_name};
-    use crate::components::cc::conversion::{CcType, Conversion};
+    use crate::components::cc::conversion::Conversion;
     use crate::components::si::sourceinfo::SourceInfo;
     use crate::components::cg::channelgroup::ChannelGroup;
     use crate::data_serde::{bytes_and_bits, right_shift_bytes, DataValue, FromBeBytes, FromLeBytes, UTF16String};
@@ -164,9 +164,9 @@ pub mod channel {
             match self.get_data_type() {
                  0 | 1 => {
                     if bits <= 8 {
-                        Ok(DataValue::UINT8(self.gen_value_vec::<u8>(file, dg, cg)?))
+                        Ok(DataValue::UINT8(self.gen_value_vec(file, dg, cg)?))
                     } else if bits>8 && bits <= 16 {
-                        Ok(DataValue::UINT16(self.gen_value_vec::<u16>(file, dg, cg)?))
+                        Ok(DataValue::UINT16(self.gen_value_vec(file, dg, cg)?))
                     } else if bits>16 && bits <= 32 {
                         Ok(DataValue::UINT32(self.gen_value_vec::<u32>(file, dg, cg)?))
                     } else if bits>32 && bits <= 64 {
@@ -212,11 +212,15 @@ pub mod channel {
 
         pub fn get_data(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
             let data_raw = self.get_data_raw(file, dg, cg)?;
-            let float_data: Vec<f64> = data_raw.try_into()?;
-            if self.get_conversion().get_cc_type().is_num() {
-                Ok(DataValue::REAL(float_data.into_iter().map(|f| self.get_conversion().transform_value(f)).collect()))
+            if data_raw.is_num() {
+                let float_data: Vec<f64> = data_raw.try_into()?;
+                if self.get_conversion().get_cc_type().is_num() {
+                    Ok(DataValue::REAL(float_data.into_iter().map(|f| self.get_conversion().transform_value(f)).collect()))
+                } else {
+                    Ok(DataValue::STRINGS(float_data.into_iter().map(|f| self.get_conversion().convert_to_text(file, f).unwrap()).collect()))  // todo: remove unwrap handle errors
+                }
             } else {
-                Ok(DataValue::STRINGS(float_data.into_iter().map(|f| self.get_conversion().convert_to_text(file, f).unwrap()).collect()))  // todo: remove unwrap handle errors
+                Ok(data_raw)
             }
         }
 
