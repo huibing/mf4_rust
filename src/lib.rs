@@ -655,7 +655,7 @@ pub mod parser {
         }
     }
 
-    struct ChannelMap<'a> (pub HashMap<String, ChannelLink<'a>>);
+    pub struct ChannelMap<'a> (pub HashMap<String, ChannelLink<'a>>);
     self_cell!(
         pub struct Mf4Wrapper{
             owner: (Mdf, RefCell<BufReader<File>>),
@@ -664,7 +664,7 @@ pub mod parser {
         }
         
     );
-    impl  Mf4Wrapper {
+    impl Mf4Wrapper {
         pub fn from(file: PathBuf) -> Result<Self, DynError> {
             let buf = RefCell::new(BufReader::new(File::open(file)?));
             let mdf = Mdf::new(&mut buf.borrow_mut())?;
