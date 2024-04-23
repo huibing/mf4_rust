@@ -117,6 +117,10 @@ pub mod channelgroup {
         pub fn get_master(&self) -> Option<&Channel> {
             self.master.as_ref()
         }
+
+        pub fn nth_cn(&self, n: usize) -> Option<&Channel> {
+            self.channels.get(n)
+        }
     }
 }
 

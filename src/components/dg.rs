@@ -23,7 +23,7 @@ pub mod datagroup {
     }
 
     pub struct ChannelLink<'a>
-        (&'a Channel, &'a ChannelGroup, &'a DataGroup);
+        (pub &'a Channel, pub &'a ChannelGroup, pub &'a DataGroup);
 
     impl ChannelLink<'_> {
         pub fn get_channel(&self) -> &Channel {
@@ -245,7 +245,7 @@ pub mod datagroup {
 
         pub fn get_cg_data(&self, rec_id: u64, index: u64, file: &mut BufReader<File>) -> Option<Vec<u8>> {
             let virtual_offset = self.get_rec_id_offset(rec_id, index)?;
-            let data_block = &self.data_block;
+            let data_block: &Box<dyn VirtualBuf> = &self.data_block;
             let mut temp_buf = vec![0u8; self.rec_id_map.get(&rec_id)?.0 as usize];
             data_block.read_virtual_buf(file, virtual_offset, &mut temp_buf[..]).ok()?;
             Some(temp_buf)
@@ -274,6 +274,10 @@ pub mod datagroup {
 
         pub fn get_channle_groups(&self) -> &Vec<ChannelGroup> {
             &self.channel_groups
+        }
+
+        pub fn nth_cg(&self, n: usize) -> Option<&ChannelGroup> {
+            self.channel_groups.get(n)
         }
 
     }

@@ -411,11 +411,12 @@ pub mod parser {
     use std::path::PathBuf;
     use std::fs::File;
     use std::cell::RefCell;
-    use self_cell::self_cell;
     use byteorder::{LittleEndian, ByteOrder};
     use std::collections::{HashMap, HashSet};
     use chrono::DateTime;
     use lazy_static::lazy_static;
+    use lru::LruCache;
+    use std::num::NonZeroUsize;
     use crate::components::dg::datagroup::{DataGroup, ChannelLink};
 
     type DynError = Box<dyn std::error::Error>;
@@ -653,52 +654,83 @@ pub mod parser {
         pub fn get_time_stamp(&self) -> String {
             self.mdfinfo.date_time.to_owned()
         }
+
+        pub fn nth_dg(&self, index: usize) -> Option<&DataGroup> {
+            self.data.get(index)
+        }
     }
 
-    pub struct ChannelMap<'a> (pub HashMap<String, ChannelLink<'a>>);
-    self_cell!(
-        pub struct Mf4Wrapper{
-            owner: (Mdf, RefCell<BufReader<File>>),
-            #[covariant]
-            dependent: ChannelMap,
-        }
+    
+    pub struct Mf4Wrapper{
+        mdf: Mdf,
+        buf: RefCell<BufReader<File>>,
+        channel_cache: HashMap<String, (usize, usize, usize)>,
+        master_cache: LruCache<(usize, usize), DataValue>
+    }
         
-    );
+
     impl Mf4Wrapper {
-        pub fn from(file: PathBuf) -> Result<Self, DynError> {
+        pub fn new(file: PathBuf) -> Result<Self, DynError> {
             let buf = RefCell::new(BufReader::new(File::open(file)?));
             let mdf = Mdf::new(&mut buf.borrow_mut())?;
-            Ok(Mf4Wrapper::new(
-                (mdf, buf),
-                |owner| ChannelMap(owner.0.generate_channel_map()),
-            ))
+            let mut channel_cache: HashMap<String, (usize, usize, usize)> = HashMap::new();
+            for (dg_index, dg) in mdf.data.iter().enumerate() {
+                for (cg_index, cg) in dg.get_channle_groups().iter().enumerate() {
+                    for (cn_index, cn) in cg.get_channels().iter().enumerate() {
+                        channel_cache.insert(cn.get_name().to_owned(), (dg_index, cg_index, cn_index));
+                    }
+                }
+            }
+            let master_cache = LruCache::new(NonZeroUsize::new(5).unwrap());
+            Ok(Self {
+                mdf,
+                buf,
+                channel_cache,
+                master_cache,
+            })
         }
 
         pub fn get_channel_names(&self) -> Vec<String> {
-            self.borrow_dependent().0.iter().map(|(k, _)| k.clone()).collect()
+            self.mdf.get_all_channel_names()
         }
-
+        pub fn get_channel_link(&self, channel_name: &str) -> Option<ChannelLink> {
+            let (dg_index, cg_index, cn_index) = self.channel_cache.get(channel_name)?;
+            let dg = self.mdf.nth_dg(*dg_index)?;
+            let cg = dg.nth_cg(*cg_index)?;
+            let cn = cg.nth_cn(*cn_index)?;
+            Some(ChannelLink(cn, cg, dg))
+        }
         pub fn get_channel_data(&self, channel_name: &str) -> Option<DataValue>{
-            let cl = self.borrow_dependent().0.get(channel_name)?;
-            Some(cl.get_channel().get_data(&mut *self.borrow_owner().1.borrow_mut(),
-                 cl.get_data_group(), cl.get_channel_group()).ok()?)
+            if let Some(ChannelLink(cn, cg, dg)) = self.get_channel_link(channel_name) {
+                Some(cn.get_data(&mut *self.buf.borrow_mut(), dg, cg).ok()?)
+            } else {
+                None
+            }
         }
 
-        pub fn get_channel_master_data(&self, channel_name: &str) -> Option<DataValue> {
-            let cl = self.borrow_dependent().0.get(channel_name)?;
-            Some(cl.get_master_channel_data(&mut *self.borrow_owner().1.borrow_mut()).ok()?)
+        pub fn get_channel_master_data(&mut self, channel_name: &str) -> Option<&DataValue> {
+            let (dg_index, cg_index, cn_index) = self.channel_cache.get(channel_name)?;
+            if self.master_cache.contains(&(*dg_index, *cg_index)) {
+                self.master_cache.get(&(*dg_index, *cg_index))
+            } else {
+                let dg = self.mdf.nth_dg(*dg_index)?;
+                let cg = dg.nth_cg(*cg_index)?;
+                let cn = cg.nth_cn(*cn_index)?;
+                let cl = ChannelLink(cn, cg, dg);
+                {
+                    self.master_cache.put((*dg_index, *cg_index), cl.get_master_channel_data(&mut *self.buf.borrow_mut()).ok()?);
+                }
+                Some(self.master_cache.get(&(*dg_index, *cg_index)).unwrap())
+            }
+            
         }
 
         pub fn get_all_channel_groups(&self) -> Vec<&ChannelGroup> {
-            self.borrow_owner().0.get_all_channel_groups()
+            self.mdf.get_all_channel_groups()
         }
 
         pub fn get_time_stamp(&self) -> String {
-            self.borrow_owner().0.get_time_stamp()
-        }
-
-        pub fn get_channel_map(&self) -> &HashMap<String, ChannelLink> {
-            &self.borrow_dependent().0
+            self.mdf.get_time_stamp()
         }
 
         
@@ -838,7 +870,7 @@ pub mod parser_test {
         let file = PathBuf::from("test/1.mf4");
         let mut buf = BufReader::new(std::fs::File::open(file).unwrap());
         let mdf = Mdf::new(&mut buf).unwrap();
-        let wrapper = Mf4Wrapper::from(PathBuf::from("test/1.mf4")).unwrap();
+        let wrapper = Mf4Wrapper::new(PathBuf::from("test/1.mf4")).unwrap();
         let channel_map = mdf.generate_channel_map();
         assert!(mdf.check_duplicate_channel().is_none());
         // print out channel group info
@@ -874,14 +906,18 @@ pub mod parser_test {
 
     #[test]
     fn test_mdf_wrapper_new() {
-        let wrapper = Mf4Wrapper::from(PathBuf::from("test/1.mf4")).unwrap();
+        let mut wrapper = Mf4Wrapper::new(PathBuf::from("test/1.mf4")).unwrap();
         println!("{:?}", wrapper.get_channel_names());
-
-        let channel_data = wrapper.get_channel_data("$CalibrationLog").unwrap();
+        {
+            let channel_data = wrapper.get_channel_data("$CalibrationLog").unwrap();
                                              //.unwrap_or(crate::data_serde::DataValue::CHAR("Error".to_string()));
-        println!("{:?}", channel_data);
+            //println!("{:?}", channel_data);
 
-        let channel_data = wrapper.get_channel_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();
-        println!("{:?}", channel_data);
+            let channel_data = wrapper.get_channel_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();
+            //println!("{:?}", channel_data);
+        }
+
+        let master_data = wrapper.get_channel_master_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();
+        println!("{:?}", master_data);
     }
 }
