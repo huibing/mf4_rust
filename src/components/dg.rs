@@ -192,7 +192,14 @@ pub mod datagroup {
             let data_length = data_block.get_data_len(); // skip link_count
             let mut cur_off: u64 = 0; // virtual offset always start from 0
             while cur_off < data_length {
-                let (rec_id, id_size) = read_rec_id(rec_id_size, &data_block, buf, cur_off)?;
+                let rec_id: u64;
+                let id_size: u8;
+                if !sorted {
+                    (rec_id, id_size) = read_rec_id(rec_id_size, &data_block, buf, cur_off)?;
+                } else {
+                    rec_id = channel_groups.get(0).and_then(|cg| Some(cg.get_record_id())).or(Some(0u64)).unwrap();
+                    id_size = 0u8;
+                }
                 cur_off += id_size as u64;
                 if !sorted{ /* for sorted dg, no offsets_map cache needed, it's easy to caculate record offset */
                     offsets_map.entry(rec_id)
