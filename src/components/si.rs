@@ -5,8 +5,9 @@ pub mod sourceinfo {
     use crate::parser::{get_clean_text, get_block_desc_by_name};
     use std::fmt::Display;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Default)]
     pub enum SiType {
+        #[default]
         OTHER,
         ECU,
         BUS,
@@ -28,8 +29,9 @@ pub mod sourceinfo {
         }
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Default)]
     pub enum SiBusType {
+        #[default]
         NONE,
         OTHER,
         CAN,
@@ -57,7 +59,7 @@ pub mod sourceinfo {
         }
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Default)]
     pub struct SourceInfo {
         name: String,
         path: String,
@@ -69,6 +71,9 @@ pub mod sourceinfo {
 
     impl SourceInfo {
         pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<SourceInfo, Box<dyn std::error::Error>> {
+            if offset == 0 {
+                return Ok(Self::default()) // allows default
+            }
             let si_desc = get_block_desc_by_name("SI".to_string()).unwrap();
             let info: BlockInfo = si_desc.try_parse_buf(buf, offset)?;
             let name_offset = info.get_link_offset_normal("si_tx_name")

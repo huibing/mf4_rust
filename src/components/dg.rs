@@ -199,7 +199,7 @@ pub mod datagroup {
                            .and_modify(|v| v.push(cur_off))
                            .or_insert(vec![cur_off]);
                 }
-                let bytes_to_skip = rec_id_map.get(&rec_id).unwrap().0;  // skip this record's data field
+                let bytes_to_skip: u32 = rec_id_map.get(&rec_id).unwrap().0;  // skip this record's data field
                 cur_off += bytes_to_skip as u64;
                 cycle_count_map.entry(rec_id)
                                .and_modify(|v| {*v += 1})

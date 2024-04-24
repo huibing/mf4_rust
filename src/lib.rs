@@ -220,7 +220,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
             let mut id_buf = [0u8;4];
             buf.read_exact(&mut id_buf).unwrap();
             if !self.check_id(&id_buf) {
-                println!("Invalid block id");     // TODO: debug info  put into logger
+                //println!("Invalid block id");     // TODO: debug info  put into logger
                 return Err("Invalid block id".into());
             } else {
                 let mut blk_info: BlockInfo = BlockInfo {
@@ -243,7 +243,6 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                     let mut link_buf: [u8; 8] = [0u8;8];   // link are 8 bytes long 
                     // it is very important that link fields are ordered just like in toml file
                     for _ in 0..link_count {
-                        //zip to make sure not to exceed link count, toml config has some link are OPTIONAL
                         cur.read_exact(&mut link_buf).unwrap();
                         let link_offset = LittleEndian::read_u64(&link_buf);
                         blk_info.links.push(link_offset);
@@ -664,8 +663,8 @@ pub mod parser {
     pub struct Mf4Wrapper{
         mdf: Mdf,
         buf: RefCell<BufReader<File>>,
-        channel_cache: HashMap<String, (usize, usize, usize)>,
-        master_cache: LruCache<(usize, usize), DataValue>
+        channel_cache: HashMap<String, (usize, usize, usize)>, // (dg_index, cg_index, cn_index)
+        master_cache: LruCache<(usize, usize), DataValue>  // (dg_index, cg_index)
     }
         
 
@@ -713,10 +712,10 @@ pub mod parser {
             if self.master_cache.contains(&(*dg_index, *cg_index)) {
                 self.master_cache.get(&(*dg_index, *cg_index))
             } else {
-                let dg = self.mdf.nth_dg(*dg_index)?;
-                let cg = dg.nth_cg(*cg_index)?;
-                let cn = cg.nth_cn(*cn_index)?;
-                let cl = ChannelLink(cn, cg, dg);
+                let dg: &DataGroup = self.mdf.nth_dg(*dg_index)?;
+                let cg: &ChannelGroup = dg.nth_cg(*cg_index)?;
+                let cn: &crate::components::cn::channel::Channel = cg.nth_cn(*cn_index)?;
+                let cl: ChannelLink<'_> = ChannelLink(cn, cg, dg);
                 {
                     self.master_cache.put((*dg_index, *cg_index), cl.get_master_channel_data(&mut *self.buf.borrow_mut()).ok()?);
                 }
@@ -732,7 +731,10 @@ pub mod parser {
         pub fn get_time_stamp(&self) -> String {
             self.mdf.get_time_stamp()
         }
-
+        
+        pub fn is_sorted(&self) -> bool {
+            self.mdf.data.iter().all(|dg| dg.is_sorted())
+        }
         
     }
     
@@ -908,16 +910,17 @@ pub mod parser_test {
     fn test_mdf_wrapper_new() {
         let mut wrapper = Mf4Wrapper::new(PathBuf::from("test/1.mf4")).unwrap();
         println!("{:?}", wrapper.get_channel_names());
-        {
-            let channel_data = wrapper.get_channel_data("$CalibrationLog").unwrap();
-                                             //.unwrap_or(crate::data_serde::DataValue::CHAR("Error".to_string()));
-            //println!("{:?}", channel_data);
+        let _ = wrapper.get_channel_data("$CalibrationLog").unwrap();
+                                            //.unwrap_or(crate::data_serde::DataValue::CHAR("Error".to_string()));
+        //println!("{:?}", channel_data);
 
-            let channel_data = wrapper.get_channel_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();
-            //println!("{:?}", channel_data);
-        }
+        
+
 
         let master_data = wrapper.get_channel_master_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();
         println!("{:?}", master_data);
+
+        let channel_data = wrapper.get_channel_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();
+        println!("{:?}", channel_data);
     }
 }

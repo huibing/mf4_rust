@@ -44,18 +44,19 @@ pub mod channel {
         pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
             let desc: &BlockDesc = get_block_desc_by_name("CN".to_string()).expect("CN block not found");
             let info: crate::block::BlockInfo = desc.try_parse_buf(buf, offset).unwrap();
-            let name = get_clean_text(buf, info.get_link_offset_normal("cn_tx_name").unwrap())?;
-            let source = SourceInfo::new(buf, info.get_link_offset_normal("cn_si_source").unwrap())?;
-            let conversion = Conversion::new(buf, info.get_link_offset_normal("cn_cc_conversion").unwrap())?;
+            let name: String = get_clean_text(buf, info.get_link_offset_normal("cn_tx_name").unwrap())
+                               .unwrap_or("".to_string());
+            let source: SourceInfo = SourceInfo::new(buf, info.get_link_offset_normal("cn_si_source").unwrap())?;
+            let conversion: Conversion = Conversion::new(buf, info.get_link_offset_normal("cn_cc_conversion").unwrap())?;
             let unit: String = get_clean_text(buf, info.get_link_offset_normal("cn_md_unit").unwrap())
                                 .unwrap_or("".to_string());
             let comment: String = get_clean_text(buf, info.get_link_offset_normal("cn_md_comment").unwrap())
                                 .unwrap_or("".to_string());
             let cn_type: u8 = info.get_data_value_first("cn_type").ok_or("cn_type not found")?;
-            let master = match cn_type {
-                0 => false,
+            let master: bool = match cn_type {
+                0 | 1 => false,
                 2 | 3 => true,
-                _ => return Err("cn_type not supportted yet.".into()),
+                _ => return Err(format!("cn_type {} not supportted yet.", cn_type).into()),
             };
             let sync_type: SyncType = match info.get_data_value_first::<u8>("cn_sync_type") {
                 Some(0) => SyncType::None,

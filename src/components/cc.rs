@@ -4,7 +4,7 @@ pub mod conversion {
     use crate::block::BlockInfo;
     use crate::parser::{get_tx_data, get_clean_text, get_block_desc_by_name};
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Default)]
     pub struct Conversion 
     {
         name: String,
@@ -14,8 +14,9 @@ pub mod conversion {
         cc_type: CcType,
     } 
     
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Default)]
     pub enum CcType {
+        #[default]
         OneToOne,
         Linear((f64, f64)),
         Rational([f64; 6]),
@@ -55,6 +56,9 @@ pub mod conversion {
 
     impl Conversion {
         pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
+            if offset == 0 {
+                return Ok(Self::default())    // allows default
+            }
             let cc_desc = get_block_desc_by_name("CC".to_string()).unwrap();
             let block_info: BlockInfo = cc_desc.try_parse_buf(buf, offset).unwrap();
             let name: String = get_tx_data(buf, block_info.get_link_offset_normal("cc_tx_name").unwrap())

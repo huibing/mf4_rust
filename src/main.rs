@@ -1,33 +1,19 @@
-use mf4_parse::block::BlockDesc;
-use std::fs::File;
-use std::io::BufReader;
+use mf4_parse::parser::Mf4Wrapper;
+use mf4_parse::components::dg::datagroup::ChannelLink;
+use std::path::PathBuf;
 
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // test string
-    let toml_content = r####"  
-        id = "##DG"
-        implemented = true
-        [link]
-        dg_dg_next = ["DG"]
-        dg_cg_first = ["CG"]
-        dg_data = ["DT", "DV", "DZ", "DL", "LD", "HL"]
-        dg_md_comment = ["TX", "MD"]
-        [data]
-        dg_rec_id_size = {data_type="BYTE", size=1}
-        dg_reserved = {data_type="BYTE", size=7}
-        "####;
-    let block: BlockDesc = toml::from_str(toml_content)?;
-    println!("{:?}", block);
-    println!("{:?}", block.get_data_field("dg_rec_id_size").unwrap().get_data_type());
-    println!("{:?}", block.get_link_block_type("dg_data").unwrap());
-
-    assert!(block.check_id(b"##DG"));
-    assert!(block.is_implemented());
-
-    let file = File::open("./test/1.mf4")?;
-    let mut buf = BufReader::new(file);   // offset 992   0x3e0
-    let offset = 0x8db0;
-    println!("{:?}", block.try_parse_buf(&mut buf, offset).unwrap());
+    let mf4 = Mf4Wrapper::new(PathBuf::from("test/demo.mf4"))?;
+    let channel_names = mf4.get_channel_names();
+    println!("{:?}", channel_names);
+    let _ = mf4.get_channel_data("ZONE_2D_CRC\0\0\0\0");
+    /* println!("{:?}\n value ends\n", value);
+    if let Some(ChannelLink(cn, cg, _)) = mf4.get_channel_link("ZONE_2D_CRC\0\0\0\0") {
+        println!("channel comment: {:?}", cn.get_comment());
+        println!("channel group comment: {:?}", cg.get_comment());
+        println!("channel group source: {:?}", cg.get_acq_name());
+        println!("channel group source info: {}", cg.get_acq_source());
+    } */
     Ok(())
 }
