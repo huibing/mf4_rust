@@ -24,21 +24,21 @@ pub mod dataxxx {
     impl DT{
         /* This should also works for SD and RD blocks; they have samilar data structure  */
         pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError>{
+            if offset == 0 {
+                return Err("Invalid data block offset".into());
+            }
             let mut data_buf = [0u8; 4];
             buf.seek(SeekFrom::Start(offset))?;
             buf.read_exact(&mut data_buf)?;
-            if String::from_utf8(data_buf.to_vec()).unwrap() != "##DT"{
-                return Err("Invalid DT block".into());
-            } else {
-                buf.seek(SeekFrom::Current(4))?; // skip 4 reserved bytes
-                let mut buffer = [0u8; 8];
-                buf.read_exact(&mut buffer)?;
-                buf.seek(SeekFrom::Current(8))?; // skip 8 bytes that are link len
-                Ok(DT{
-                    data_len: u64::from_le_bytes(buffer) - 24,  // without header
-                    data_offset: buf.stream_position()?,
-                })
-            }
+            buf.seek(SeekFrom::Current(4))?; // skip 4 reserved bytes
+            let mut buffer = [0u8; 8];
+            buf.read_exact(&mut buffer)?;
+            buf.seek(SeekFrom::Current(8))?; // skip 8 bytes that are link len
+            Ok(DT{
+                data_len: u64::from_le_bytes(buffer) - 24,  // without header
+                data_offset: buf.stream_position()?,
+            })
+
         }
     }
 
@@ -307,7 +307,7 @@ pub mod dataxxx {
         buf.read_exact(&mut four_bytes_id)?;
         let id = String::from_utf8(four_bytes_id.to_vec()).unwrap();
         match id.as_str() {
-            "##DT" => Ok(Box::new(DT::new(buf, offset)?)),
+            "##DT" | "##SD" => Ok(Box::new(DT::new(buf, offset)?)),
             "##DL" => Ok(Box::new(DataLink::new(buf, offset)?)),
             _ => Err("Unknown data block id.".into()),
         }

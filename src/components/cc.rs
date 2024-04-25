@@ -208,22 +208,29 @@ pub mod conversion {
                     }
                 },
                 CcType::Table((index, value)) => {
-                    let mut left_ind = 0;
-                    while inp >= index[left_ind] && left_ind < index.len() {
-                        left_ind += 1;
+                    if inp <= index[0] {
+                        U::from(value[0])
+                    } else if inp >= index[index.len()-1] {
+                        U::from(value[value.len()-1])
+                    } else {
+                        let mut right_ind = 0;
+                        while right_ind < index.len() && inp >= index[right_ind]{
+                            right_ind += 1;
+                        };
+                        let left_val = value[right_ind-1];
+                        U::from(left_val)
                     }
-                    U::from(value[left_ind])
                 },
                 CcType::ValueRange(value) => {
                     let default_value = value.last().unwrap();
                     let mut left_ind = 0;
-                    while inp >= value[left_ind] && left_ind < value.len()-1 {
+                    while left_ind < value.len()-1 && inp >= value[left_ind] {
                         left_ind += 3;
                     };
-                    if left_ind >= value.len() - 1 {
+                    if left_ind == 0 || left_ind >= value.len()-1 {
                         U::from(default_value.to_owned())
                     } else {
-                        U::from(value[left_ind+2])
+                        U::from(value[left_ind-1])
                     }
                 },
                 _ => {
@@ -241,19 +248,13 @@ pub mod conversion {
                     let default_value: String = get_clean_text(buf, ref_text[ref_text.len()-1])
                                                 .unwrap_or("".to_string());
                     while left_ind < value.len() && inp >= value[left_ind] {
-                        left_ind += 2;
-                    }
-                    if left_ind >= 2 {
-                        let left_val = value[left_ind-2];
-                        let right_val = value[left_ind-1];
-                        if inp <= right_val && inp >= left_val {
-                            Ok(get_clean_text(buf, ref_text[left_ind/2-1]).unwrap_or(default_value))
+                        if inp <= *value.get(left_ind+1).unwrap_or(&f64::MIN) {
+                            return Ok(get_clean_text(buf, ref_text[left_ind/2]).unwrap_or(default_value));
                         } else {
-                            Ok(default_value)
+                            left_ind += 2;
                         }
-                    } else {
-                        Ok(default_value)
                     }
+                    Ok(default_value)
                 },
                 CcType::ValueText((value, ref_text)) => {
                     let mut left_ind:usize = 0;

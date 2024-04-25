@@ -11,7 +11,7 @@ pub mod channel {
     use crate::components::si::sourceinfo::SourceInfo;
     use crate::components::cg::channelgroup::ChannelGroup;
     use crate::data_serde::{bytes_and_bits, right_shift_bytes, DataValue, FromBeBytes, FromLeBytes, UTF16String};
-
+    use crate::components::dx::dataxxx::read_data_block;
     
     type DynError = Box<dyn std::error::Error>;
     #[derive(Debug, Clone)]
@@ -38,6 +38,7 @@ pub mod channel {
         bit_count: u32,
         bytes_num: u32,
         master: bool,
+        cn_data: u64,
     }
 
     impl Channel {
@@ -71,6 +72,7 @@ pub mod channel {
             let byte_offset: u32 = info.get_data_value_first("cn_byte_offset").ok_or("cn_byte_offset not found")?;
             let bit_count: u32 = info.get_data_value_first("cn_bit_count").ok_or("cn_bit_count not found")?;
             let bytes_num: u32 = (bit_count as f32 / 8.0).ceil() as u32;
+            let cn_data: u64 = info.get_link_offset_normal("cn_data").unwrap_or(0);
             Ok(Self {
                 name,
                 source,
@@ -85,6 +87,7 @@ pub mod channel {
                 bit_count,
                 master,
                 bytes_num,
+                cn_data
             })
         }
 
@@ -162,6 +165,10 @@ pub mod channel {
 
         pub fn get_data_raw(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
             let bits: u32 = self.get_bit_size();
+            if self.get_cn_type() == &1 { 
+                // special case for VLSD ; record bytes are only offset of SD blocks 
+                return Ok(DataValue::UINT64(self.gen_value_vec::<u64>(file, dg, cg)?))
+            }
             match self.get_data_type() {
                  0 | 1 => {
                     if bits <= 8 {
@@ -213,6 +220,10 @@ pub mod channel {
 
         pub fn get_data(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
             let data_raw = self.get_data_raw(file, dg, cg)?;
+            if self.get_cn_type() == &1 {
+                let offsets = data_raw.try_into()?;
+                return self.parse_sd_data(file, &offsets)
+            }
             if data_raw.is_num() {
                 let float_data: Vec<f64> = data_raw.try_into()?;
                 if self.get_conversion().get_cc_type().is_num() {
@@ -236,9 +247,42 @@ pub mod channel {
             Ok(values)
         }
 
+        fn parse_sd_data(&self, file: &mut BufReader<File>, offsets: &Vec<u64>) -> Result<DataValue, DynError> {
+            let data_blocks = read_data_block(file, self.cn_data)?;
+            let mut sd_data: Vec<String> = Vec::new();  // todo: is there any other possible data types?
+            for offset in offsets.iter() {
+                let mut four_bytes = [0u8; 4];
+                data_blocks.read_virtual_buf(file, *offset, &mut four_bytes)?;
+                let length = u32::from_le_bytes(four_bytes);
+                let mut data_bytes = vec![0u8; length as usize];
+                data_blocks.read_virtual_buf(file, *offset + 4, &mut data_bytes)?;
+                match self.get_data_type() {
+                    6 | 7 => {
+                        let raw = String::from_utf8(data_bytes)?;
+                        sd_data.push(raw.trim_end_matches('\0').to_string());
+                    },
+                    8 => {
+                        let mut data = Cursor::new(data_bytes);
+                        let u16str = UTF16String::from_le_bytes(&mut data);
+                        sd_data.push(u16str.inner.trim_end_matches('\0').to_string());
+                    },
+                    9 => {
+                        let mut data = Cursor::new(data_bytes);
+                        let u16str = UTF16String::from_be_bytes(&mut data);
+                        sd_data.push(u16str.inner.trim_end_matches('\0').to_string());
+                    },
+                    num => {
+                        return Err(format!("Can not parse sd data with this type {}", num).into())
+                    }
+                }
+            }
+            Ok(DataValue::STRINGS(sd_data))
+        }
+
     }
 
     impl Display for Channel {
+        // for debug purpose
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "Channel: {}", self.name)?;
             write!(f, "\n-----------Source: {}", self.source)?;
@@ -247,6 +291,8 @@ pub mod channel {
             write!(f, "\n-----------Conversion: {}: {:?}", self.conversion.get_cc_name(), self.conversion.get_cc_type())?;
             write!(f, "\n-----------Unit: {}", self.unit)?;
             write!(f, "\n-----------DataType: {}", self.data_type)?;
+            write!(f, "\n-----------ChannelType: {}", self.cn_type)?;
+            write!(f, "\n-----------BitSize: {}", self.get_bit_size())?;
             write!(f, "\nEND Channel {}", self.name)
         }
     }

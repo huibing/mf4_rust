@@ -254,7 +254,9 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                     let data_value: DataValue = field.try_parse_value(&mut cur)?;
                     blk_info.data.insert(dname.clone(), data_value);
                 }
-                blk_info.map_links().unwrap();
+                blk_info.map_links().unwrap_or_else(|e| {
+                    println!("Failed to map links due to {}" , e);
+                });
                 Ok(blk_info)
             }
         }
@@ -588,11 +590,7 @@ pub mod parser {
     pub fn get_clean_text(file :&mut BufReader<File>, offset: u64) -> Result<String, DynError> {
         // TX and MD block will have \0 terminated string; use this function to remove the tailing \0
         let text = get_text(file, offset)?;
-        if text.len() > 0 {
-            Ok(text[..(text.len()-1)].to_owned())
-        } else {
-            Ok(text)
-        }
+        Ok(text.trim_end_matches('\0').to_string())
     }
     pub struct Mdf {
         pub mdfinfo: MdfInfo,
@@ -721,7 +719,6 @@ pub mod parser {
                 }
                 Some(self.master_cache.get(&(*dg_index, *cg_index)).unwrap())
             }
-            
         }
 
         pub fn get_all_channel_groups(&self) -> Vec<&ChannelGroup> {
@@ -913,13 +910,8 @@ pub mod parser_test {
         let _ = wrapper.get_channel_data("$CalibrationLog").unwrap();
                                             //.unwrap_or(crate::data_serde::DataValue::CHAR("Error".to_string()));
         //println!("{:?}", channel_data);
-
-        
-
-
         let master_data = wrapper.get_channel_master_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();
         println!("{:?}", master_data);
-
         let channel_data = wrapper.get_channel_data("ASAM.M.SCALAR.UBYTE.HYPERBOLIC").unwrap();
         println!("{:?}", channel_data);
     }
