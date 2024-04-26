@@ -574,12 +574,12 @@ pub mod parser {
         let tx_info: BlockInfo = desc.try_parse_buf(file, offset)?;
         match tx_info.get_id().as_str() {
             "##TX" => {
-                let name_v = tx_info.get_data_value("tx_data").unwrap();
-                Ok(name_v.clone().try_into()?)
+                let data = tx_info.get_data_value("tx_data").unwrap();
+                Ok(data.clone().try_into()?)
             },
             "##MD" => {
-                let name_v = tx_info.get_data_value("md_data").unwrap();
-                Ok(name_v.clone().try_into()?)
+                let data = tx_info.get_data_value("md_data").unwrap();
+                Ok(data.clone().try_into()?)
             },
             _ => {
                 Err(format!("unknown TEXT block at offset: {}", offset).into())
@@ -592,6 +592,21 @@ pub mod parser {
         let text = get_text(file, offset)?;
         Ok(text.trim_end_matches('\0').to_string())
     }
+
+    pub fn peek_block_type(file: &mut BufReader<File>, offset: u64) -> Result<String, DynError> {
+        if offset == 0 || offset % 8 != 0 {
+            Err("Invalid block start offset".into())
+        } else {
+            let mut buf: [u8; 4] = [0u8;4];
+            let orig_position = file.stream_position()?;
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(&mut buf)?;
+            let block_type: String = String::from_utf8(buf[2..].to_vec())?;
+            file.seek(SeekFrom::Start(orig_position))?; // return to original position
+            Ok(block_type)
+        }
+    }
+    
     pub struct Mdf {
         pub mdfinfo: MdfInfo,
         pub data: Vec<DataGroup>
@@ -714,9 +729,9 @@ pub mod parser {
                 let cg: &ChannelGroup = dg.nth_cg(*cg_index)?;
                 let cn: &crate::components::cn::channel::Channel = cg.nth_cn(*cn_index)?;
                 let cl: ChannelLink<'_> = ChannelLink(cn, cg, dg);
-                {
+                
                     self.master_cache.put((*dg_index, *cg_index), cl.get_master_channel_data(&mut *self.buf.borrow_mut()).ok()?);
-                }
+                
                 Some(self.master_cache.get(&(*dg_index, *cg_index)).unwrap())
             }
         }
@@ -797,6 +812,7 @@ pub mod parser_test {
     use std::path::PathBuf;
     use crate::parser::*;
     use crate::block::*;
+    use rstest::*;
 
     #[test]
     fn test_parse_toml() {
@@ -862,6 +878,17 @@ pub mod parser_test {
         let block_info = block_desc.try_parse_buf(&mut buf, 0x8e30).unwrap();
         let ss:String = block_info.get_data_value("tx_data").unwrap().to_owned().try_into().unwrap();
         println!("info:::::::{:?}", ss);
+    }
+
+    #[rstest]
+    #[case(0x8e30, "TX")]
+    #[case(0x8db0, "DG")]
+    #[case(0x8f10, "DL")]
+    fn test_peek_block_type(#[case] offset:u64, #[case] expected: &str) {
+        let file: std::fs::File = std::fs::File::open("test/1.mf4").unwrap();
+        let mut buf: BufReader<std::fs::File> = BufReader::new(file);
+        let block_type = peek_block_type(&mut buf, offset).unwrap();
+        assert_eq!(block_type, expected);
     }
 
     #[test]

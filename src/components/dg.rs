@@ -110,7 +110,7 @@ pub mod datagroup {
             } else {
                 let cg: &ChannelGroup = self.get_channel_group();
                 let dg: &DataGroup = self.get_data_group();
-                let master_cn = cg.get_master()
+                let master_cn: &Channel = cg.get_master()
                                             .ok_or::<DynError>("Cannot find master channel".into())?;
                 Ok(master_cn.get_data(file, dg, cg)?)
             }

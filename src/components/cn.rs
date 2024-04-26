@@ -141,7 +141,6 @@ pub mod channel {
             let bytes_to_read = self.bytes_num;
             let raw_data = rec_bytes[self.byte_offset as usize..
                                 (self.byte_offset + bytes_to_read) as usize].to_vec();
-                // TODO: handle bit offset
             let cn_data = if self.bit_offset != 0 {
                 let mut new_bytes = right_shift_bytes(&raw_data, self.bit_offset)?;
                 bytes_and_bits(&mut new_bytes, self.bit_count);
@@ -149,7 +148,7 @@ pub mod channel {
             } else {
                 raw_data
             };
-            let mut data_buf = Cursor::new(cn_data);
+            let mut data_buf: Cursor<Vec<u8>> = Cursor::new(cn_data);
             match self.data_type {
                 // only distinguish little-edian and big-endian here. Concrete data types are handled in the up
                 // level functions.
