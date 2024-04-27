@@ -6,7 +6,7 @@ pub mod channel {
 
     use crate::block::BlockDesc;
     use crate::components::dg::datagroup::DataGroup;
-    use crate::parser::{get_clean_text, get_block_desc_by_name};
+    use crate::parser::{get_block_desc_by_name, get_child_links, get_clean_text, peek_block_type};
     use crate::components::cc::conversion::Conversion;
     use crate::components::si::sourceinfo::SourceInfo;
     use crate::components::cg::channelgroup::ChannelGroup;
@@ -39,6 +39,7 @@ pub mod channel {
         bytes_num: u32,
         master: bool,
         cn_data: u64,
+        sub_channels: Option<Vec<Channel>>
     }
 
     impl Channel {
@@ -73,6 +74,24 @@ pub mod channel {
             let bit_count: u32 = info.get_data_value_first("cn_bit_count").ok_or("cn_bit_count not found")?;
             let bytes_num: u32 = (bit_count as f32 / 8.0).ceil() as u32;
             let cn_data: u64 = info.get_link_offset_normal("cn_data").unwrap_or(0);
+            let cn_compositon = info.get_link_offset_normal("cn_composition").unwrap_or(0);
+            let sub_channels: Option<Vec<Channel>> = if let Ok(block_type) = peek_block_type(buf, cn_compositon) {
+                if data_type == 10 {
+                    match block_type.as_str() {
+                        "CN" => {
+                            let mut channels = Vec::new();
+                            let links = get_child_links(buf, cn_compositon, "cn")?;
+                            links.iter().for_each(|l| {
+                                if let Ok(cn) = Channel::new(buf, *l) {
+                                    channels.push(cn);
+                                }
+                            });
+                            Some(channels)
+                        }
+                        _ => None
+                    }
+                } else { None }
+            } else { None };
             Ok(Self {
                 name,
                 source,
@@ -87,7 +106,8 @@ pub mod channel {
                 bit_count,
                 master,
                 bytes_num,
-                cn_data
+                cn_data,
+                sub_channels,
             })
         }
 
@@ -218,6 +238,9 @@ pub mod channel {
         }
 
         pub fn get_data(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
+            if self.data_type == 10 && self.sub_channels.is_some() {
+                
+            }
             let data_raw = self.get_data_raw(file, dg, cg)?;
             if self.get_cn_type() == &1 {
                 let offsets = data_raw.try_into()?;
