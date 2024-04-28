@@ -3,6 +3,7 @@ pub mod channel {
     use std::fs::File;
     use std::fmt::Display;
     use half::f16;
+    use indexmap::IndexMap;
 
     use crate::block::BlockDesc;
     use crate::components::dg::datagroup::DataGroup;
@@ -80,9 +81,9 @@ pub mod channel {
                     match block_type.as_str() {
                         "CN" => {
                             let mut channels = Vec::new();
-                            let links = get_child_links(buf, cn_compositon, "cn")?;
+                            let links = get_child_links(buf, cn_compositon, "CN")?;
                             links.iter().for_each(|l| {
-                                if let Ok(cn) = Channel::new(buf, *l) {
+                                if let Ok(cn) = Channel::new(buf, *l) {   // this could be recursive
                                     channels.push(cn);
                                 }
                             });
@@ -238,11 +239,19 @@ pub mod channel {
         }
 
         pub fn get_data(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
-            if self.data_type == 10 && self.sub_channels.is_some() {
-                
+            if self.data_type == 10 && self.sub_channels.is_some() {   // for compact structure
+                let mut value_map: IndexMap<String, DataValue> = IndexMap::new();
+                for cn in self.sub_channels.as_ref().unwrap() {
+                    cn.get_data(file, dg, cg)  // this could be recursive
+                      .and_then(|data| {
+                        value_map.insert(cn.get_name().to_string(), data);
+                        Ok(())
+                      }).unwrap_or(());    
+                }
+                return Ok(DataValue::RECURSIVE(value_map))
             }
             let data_raw = self.get_data_raw(file, dg, cg)?;
-            if self.get_cn_type() == &1 {
+            if self.get_cn_type() == &1 {                                 // for VLSD with SD blocks; not suitable for VLSD with channel groups
                 let offsets = data_raw.try_into()?;
                 return self.parse_sd_data(file, &offsets)
             }

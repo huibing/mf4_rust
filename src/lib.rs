@@ -493,7 +493,7 @@ pub mod parser {
     }
     pub fn get_block_desc_by_name(name: String) -> Option<&'static BlockDesc> {
         let name = name.to_uppercase();
-        Some(DESC_MAP.get(&name)?)
+        DESC_MAP.get(&name)
     }
 
     pub fn get_block_desc<'a>(file: &'a mut BufReader<File>, offset: u64) -> Result<&'static BlockDesc, DynError>{

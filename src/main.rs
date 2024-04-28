@@ -18,9 +18,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mf4 = Mf4Wrapper::new(PathBuf::from("test/demo.mf4"))?;
     let channel_names = mf4.get_channel_names();
     println!("{:?}", channel_names);
-    let d = mf4.get_channel_data("struct_channel_0").unwrap();
+    let d = mf4.get_channel_data("Nested_structures").unwrap();
     println!("{:?}\n value ends\n", d);
-    display_channel_info("Channel_structure_composition", &mf4);
+    display_channel_info("Nested_structures", &mf4);
     display_channel_info("Channel_bytearay", &mf4);
     Ok(())
 }

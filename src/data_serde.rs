@@ -1,6 +1,7 @@
 use std::io::{Read, Cursor};
 use byteorder::{ByteOrder, LittleEndian, BigEndian};
 use half::f16;
+use indexmap::IndexMap;
 
 pub struct UTF16String {
     pub inner: String,
@@ -345,7 +346,8 @@ pub enum DataValue {
     INT64(Vec<i64>),
     REAL(Vec<f64>),
     SINGLE(Vec<f32>),
-    FLOAT16(Vec<f16>)
+    FLOAT16(Vec<f16>),
+    RECURSIVE(IndexMap<String, DataValue>),
 }
 
 impl DataValue {
