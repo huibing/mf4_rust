@@ -347,7 +347,7 @@ pub enum DataValue {
     REAL(Vec<f64>),
     SINGLE(Vec<f32>),
     FLOAT16(Vec<f16>),
-    RECURSIVE(IndexMap<String, DataValue>),
+    STRUCT(IndexMap<String, DataValue>),
 }
 
 impl DataValue {

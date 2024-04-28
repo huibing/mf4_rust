@@ -248,7 +248,7 @@ pub mod channel {
                         Ok(())
                       }).unwrap_or(());    
                 }
-                return Ok(DataValue::RECURSIVE(value_map))
+                return Ok(DataValue::STRUCT(value_map))
             }
             let data_raw = self.get_data_raw(file, dg, cg)?;
             if self.get_cn_type() == &1 {                                 // for VLSD with SD blocks; not suitable for VLSD with channel groups
