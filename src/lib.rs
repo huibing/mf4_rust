@@ -254,6 +254,11 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                     let data_value: DataValue = field.try_parse_value(&mut cur)?;
                     blk_info.data.insert(dname.clone(), data_value);
                 }
+                let mut left_bytes: Vec<u8> = Vec::new();
+                cur.read_to_end(&mut left_bytes).unwrap();
+                if left_bytes.len() > 0 {
+                    blk_info.data.insert("unparsed_data".to_string(), DataValue::BYTE(left_bytes));
+                }
                 blk_info.map_links().unwrap_or_else(|e| {
                     println!("Failed to map links due to {}" , e);
                 });
@@ -483,7 +488,7 @@ pub mod parser {
     lazy_static! {
         pub static ref DESC_MAP: HashMap<String, BlockDesc> = {
             let mut m = HashMap::new();
-            let block_types = ["DG", "HD", "CG", "TX", "MD", "CN", "CC", "SI"];
+            let block_types = ["DG", "HD", "CG", "TX", "MD", "CN", "CC", "SI", "CA"];
             block_types.into_iter().for_each(|key| {
                 let desc = parse_toml(key.to_lowercase().as_str()).unwrap();  // toml file names in lowercase
                 m.insert(key.to_string(), desc);  // key in uppercase

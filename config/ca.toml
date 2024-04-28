@@ -1,0 +1,15 @@
+id = "##CA"
+implemented = true
+
+[link]
+ca_composition = ["CN", "CA"]
+
+[data]
+ca_type = {data_type="UINT8", size=1}
+ca_storage = {data_type="UINT8", size=1}
+ca_ndim = {data_type="UINT16", size=1}
+ca_flags = {data_type="UINT32", size=1}
+ca_byte_offset_base = {data_type="INT32", size=1}
+ca_inval_bit_pos_base = {data_type="UINT32", size=1}
+#ca_dim_size = {data_type="UINT64", size=1}    variable
+

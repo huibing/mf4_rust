@@ -8,6 +8,7 @@ pub mod cg;
 pub mod si;
 pub mod dg;
 pub mod dx;
+pub mod ca;
 
 
 #[cfg(test)]
@@ -16,6 +17,7 @@ pub mod components_test {
     use crate::components::cn::channel::Channel;
     use crate::components::cc::conversion::*;
     use crate::components::dg::datagroup::DataGroup;
+    use crate::components::ca::channelarray::ChannelArray;
     use super::dx::dataxxx::{DataLink, VirtualBuf}; 
     use crate::data_serde::DataValue;
     use rust_embed::RustEmbed;
@@ -202,5 +204,12 @@ pub mod components_test {
         assert_eq!(data_buf, [32, 72, 146, 234, 150, 120, 139, 63, 244, 25]);
         dl.read_virtual_buf(&mut buf, 173618, &mut data_buf).unwrap();
         assert_eq!(data_buf, [48, 212, 40, 64, 231, 153, 171, 119, 114, 0]);
+    }
+
+    #[rstest]
+    fn test_new_ca() {
+        let mut buf = BufReader::new(File::open("./test/demo.mf4").unwrap());
+        let ca = ChannelArray::new(&mut buf, 0xD8E0).unwrap();
+        println!("{:?}", ca);
     }
 }
