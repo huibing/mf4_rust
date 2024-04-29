@@ -13,6 +13,7 @@ pub mod channel {
     use crate::components::cg::channelgroup::ChannelGroup;
     use crate::data_serde::{bytes_and_bits, right_shift_bytes, DataValue, FromBeBytes, FromLeBytes, UTF16String};
     use crate::components::dx::dataxxx::read_data_block;
+    use crate::components::ca::channelarray::ChannelArray;
     
     type DynError = Box<dyn std::error::Error>;
     #[derive(Debug, Clone)]
@@ -40,7 +41,8 @@ pub mod channel {
         bytes_num: u32,
         master: bool,
         cn_data: u64,
-        sub_channels: Option<Vec<Channel>>
+        sub_channels: Option<Vec<Channel>>,
+        array: Option<ChannelArray>
     }
 
     impl Channel {
@@ -76,10 +78,10 @@ pub mod channel {
             let bytes_num: u32 = (bit_count as f32 / 8.0).ceil() as u32;
             let cn_data: u64 = info.get_link_offset_normal("cn_data").unwrap_or(0);
             let cn_compositon = info.get_link_offset_normal("cn_composition").unwrap_or(0);
-            let sub_channels: Option<Vec<Channel>> = if let Ok(block_type) = peek_block_type(buf, cn_compositon) {
-                if data_type == 10 {
-                    match block_type.as_str() {
-                        "CN" => {
+            let (sub_channels, array) = if let Ok(block_type) = peek_block_type(buf, cn_compositon) {
+                match block_type.as_str() {
+                    "CN" => {
+                        if data_type == 10 {
                             let mut channels = Vec::new();
                             let links = get_child_links(buf, cn_compositon, "CN")?;
                             links.iter().for_each(|l| {
@@ -87,12 +89,17 @@ pub mod channel {
                                     channels.push(cn);
                                 }
                             });
-                            Some(channels)
+                            (Some(channels), None)
+                        } else {
+                            (None, None)
                         }
-                        _ => None
-                    }
-                } else { None }
-            } else { None };
+                    },
+                    "CA" => {
+                        (None, Some(ChannelArray::new(buf, cn_compositon)?))
+                    },
+                    _ => (None, None)
+                }
+            } else { (None, None) };
             Ok(Self {
                 name,
                 source,
@@ -109,6 +116,7 @@ pub mod channel {
                 bytes_num,
                 cn_data,
                 sub_channels,
+                array,
             })
         }
 
@@ -122,6 +130,10 @@ pub mod channel {
 
         pub fn get_cn_type(&self) -> &u8 {
             &self.cn_type
+        }
+
+        pub fn get_array(&self) -> Option<&ChannelArray> {
+            self.array.as_ref()
         }
 
         pub fn get_data_type(&self) -> u8 {
@@ -308,6 +320,34 @@ pub mod channel {
                 }
             }
             Ok(DataValue::STRINGS(sd_data))
+        }
+
+        fn set_name(&mut self, name: String) {
+            self.name = name;
+        }
+
+        fn change_byte_offset(&mut self, offset: u32) {
+            self.byte_offset = offset;
+        }
+
+        pub fn generate_array_element_channel(self) -> Result<Vec<Self>, DynError> {
+            // this function will consume self
+            if self.get_array().is_none() {
+                Err("Not an array element channel.".into())
+            } else {
+                let mut channels: Vec<Self> = Vec::new();  // element 0
+                let ca = self.get_array().unwrap();
+                let indexes = ca.generate_array_indexs();
+                let names = ca.generate_array_names(self.get_name());
+                for (index, name) in indexes.iter().zip(names.iter()) {
+                    let new_bytes_offset = ca.calculate_byte_offset(index)?;
+                    let mut new_channel = self.clone();
+                    new_channel.change_byte_offset(new_bytes_offset);
+                    new_channel.set_name(name.to_string());
+                    channels.push(new_channel);
+                }
+                Ok(channels)
+            }
         }
 
     }

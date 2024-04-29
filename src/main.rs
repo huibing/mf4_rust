@@ -8,6 +8,11 @@ fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
         println!("channel group comment: {:?}", cg.get_comment());
         println!("channel group source: {:?}", cg.get_acq_name());
         println!("channel group source info: {}", cg.get_acq_source());
+        if let Some(ar) = cn.get_array() {
+            println!("channel array info: {:?}", ar);
+            println!("channel array names {:?}", ar.generate_array_names(cn.get_name()));
+            println!("channel array indexes {:?}", ar.generate_array_indexs());
+        }
     } else {
         println!("no channel info found for {}", channel_name);
     }
@@ -21,6 +26,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let d = mf4.get_channel_data("Nested_structures").unwrap();
     println!("{:?}\n value ends\n", d);
     display_channel_info("Nested_structures", &mf4);
-    display_channel_info("Channel_bytearay", &mf4);
+    display_channel_info("Channel_lookup_with_default_axis", &mf4);
+    let new = Mf4Wrapper::new(PathBuf::from("test/string_and_array.mf4"))?;
+    display_channel_info("Channel_lookup_with_default_axis", &new);
+    let ChannelLink(cn, _, _) = new.get_channel_link("Channel_lookup_with_default_axis").unwrap();
+    let indexes = vec![0, 1, 2];
+    println!("calculated value: {:?}", cn.get_array().unwrap().calculate_byte_offset(&indexes));
     Ok(())
 }

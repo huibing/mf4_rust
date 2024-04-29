@@ -50,6 +50,10 @@ pub mod channelgroup {
                 let cn = Channel::new(buf, cn_link).unwrap();
                 if cn.is_master() {
                     master = Some(cn);
+                } else if cn.get_array().is_some() {
+                    if let Ok(cn_array) = cn.generate_array_element_channel() {
+                        channels.extend(cn_array);
+                    }
                 } else {
                     channels.push(cn);
                 }
