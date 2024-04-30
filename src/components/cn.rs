@@ -82,9 +82,9 @@ pub mod channel {
                 match block_type.as_str() {
                     "CN" => {
                         if data_type == 10 {
-                            let mut channels = Vec::new();
-                            let links = get_child_links(buf, cn_compositon, "CN")?;
-                            links.iter().for_each(|l| {
+                            let mut channels: Vec<Channel> = Vec::new();
+                            let links: Vec<u64> = get_child_links(buf, cn_compositon, "CN")?;
+                            links.iter().for_each(|l: &u64| {
                                 if let Ok(cn) = Channel::new(buf, *l) {   // this could be recursive
                                     channels.push(cn);
                                 }
@@ -95,7 +95,9 @@ pub mod channel {
                         }
                     },
                     "CA" => {
-                        (None, Some(ChannelArray::new(buf, cn_compositon)?))
+                        if let Ok(ca) = ChannelArray::new(buf, cn_compositon) {   // this could be recursive
+                            (None, Some(ca))
+                        } else { (None, None) }    // this could fail because of CG or DG template
                     },
                     _ => (None, None)
                 }
@@ -364,7 +366,7 @@ pub mod channel {
             write!(f, "\n-----------DataType: {}", self.data_type)?;
             write!(f, "\n-----------ChannelType: {}", self.cn_type)?;
             write!(f, "\n-----------BitSize: {}", self.get_bit_size())?;
-            write!(f, "\nEND Channel {}", self.name)
+            write!(f, "\nEND Channel ")
         }
     }
 }

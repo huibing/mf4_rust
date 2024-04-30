@@ -24,13 +24,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channel_names = mf4.get_channel_names();
     println!("{:?}", channel_names);
     let d = mf4.get_channel_data("Nested_structures").unwrap();
-    println!("{:?}\n value ends\n", d);
+    //println!("{:?}\n value ends\n", d);
     display_channel_info("Nested_structures", &mf4);
     display_channel_info("Channel_lookup_with_default_axis", &mf4);
     let new = Mf4Wrapper::new(PathBuf::from("test/string_and_array.mf4"))?;
-    display_channel_info("Channel_lookup_with_default_axis", &new);
-    let ChannelLink(cn, _, _) = new.get_channel_link("Channel_lookup_with_default_axis").unwrap();
-    let indexes = vec![0, 1, 2];
-    println!("calculated value: {:?}", cn.get_array().unwrap().calculate_byte_offset(&indexes));
+    display_channel_info("Channel_lookup_with_default_axis[0][0][2]", &new);
+    let d = new.get_channel_data("Channel_lookup_with_default_axis[0][0][2]").unwrap();
+    println!("{:?}\n value ends\n", d);
     Ok(())
 }
