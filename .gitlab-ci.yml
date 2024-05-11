@@ -12,7 +12,7 @@
 image: "rust:latest"
 
 before_script:
-  - sudo apt install zlib1g-dev
+  - apt-get install zlib1g-dev
 
 # Optional: Pick zero or more services to be used on all builds.
 # Only needed when using a docker container to run your tests in.
