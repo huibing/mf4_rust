@@ -1,0 +1,13 @@
+id = "##DZ"
+implemented = true
+
+[link]
+
+[data]
+dz_org_block_type = {data_type="CHAR", size=2}
+dz_zip_type = {data_type="UINT8", size=1}
+dz_reserved = {data_type="BYTE", size=1}
+dz_zip_parameter = {data_type="UINT32", size=1}
+dz_org_data_length = {data_type="UINT64", size=1}
+dz_data_length = {data_type="UINT64", size=1}
+#dz_data   variable length; this should be handled by dx.rs

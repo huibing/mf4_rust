@@ -1,0 +1,10 @@
+id = "##HL"
+implemented = true
+
+[link]
+hl_dl_first = ["DL"]
+
+[data]
+hl_flags = {data_type="UINT16", size=1}
+hl_zip_type = {data_type="UINT8", size=1}
+hl_reserved = {data_type="BYTE", size=5}

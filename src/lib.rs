@@ -394,6 +394,9 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
         pub fn get_data_value(&self, data_name: &str) -> Option<&DataValue> {
             Some(self.data.get(data_name)?)
         }
+        pub fn retrieve_data_value(&mut self, data_name: &str) -> Option<DataValue> {
+            self.data.swap_remove(data_name)
+        }
         pub fn get_data_value_copy(&self, data_name: &str) -> Option<DataValue> {
             Some(self.data.get(data_name)?.clone())
         }
@@ -488,7 +491,7 @@ pub mod parser {
     lazy_static! {
         pub static ref DESC_MAP: HashMap<String, BlockDesc> = {
             let mut m = HashMap::new();
-            let block_types = ["DG", "HD", "CG", "TX", "MD", "CN", "CC", "SI", "CA"];
+            let block_types = ["DG", "HD", "CG", "TX", "MD", "CN", "CC", "SI", "CA", "DZ", "HL"];
             block_types.into_iter().for_each(|key| {
                 let desc = parse_toml(key.to_lowercase().as_str()).unwrap();  // toml file names in lowercase
                 m.insert(key.to_string(), desc);  // key in uppercase
@@ -623,11 +626,11 @@ pub mod parser {
             let mut data = Vec::new();
             let dg_links = get_child_links(file, mdfinfo.first_dg_offset, "DG")?;
             dg_links.iter().for_each(|dg_offset| {
-                if let Ok(dg) = DataGroup::new(file, *dg_offset) {
-                    data.push(dg);
-                } else {
-                    println!("Error: failed to create DataGroup at offset: {}", dg_offset);   // todo: log instead of println!
-                }});
+                match DataGroup::new(file, *dg_offset) {
+                    Ok(dg) => data.push(dg),
+                    Err(e) => println!("Error: {} ;failed to create DataGroup at offset: {}", e, dg_offset),
+                }
+            });
             Ok(Self{
                 mdfinfo,
                 data,
@@ -635,7 +638,7 @@ pub mod parser {
         }
 
         pub fn generate_channel_map(&self) -> HashMap<String, ChannelLink> {
-            let mut map = HashMap::new();
+            let mut map: HashMap<String, ChannelLink<'_>> = HashMap::new();
             for dg in self.data.iter() {
                 map.extend(dg.create_map());
             }
@@ -650,9 +653,9 @@ pub mod parser {
             let mut dup_channel_list: Vec<String> = Vec::new();
             let v:Vec<Vec<String>> = self.data.iter().map(|dg| dg.get_all_channel_names()).collect();
             for i in 0..v.len(){
-                let v1 = v[i].iter().collect::<HashSet<&String>>();
+                let v1: HashSet<&String> = v[i].iter().collect::<HashSet<&String>>();
                 for j in i+1..v.len() {
-                    let v2 = v[j].iter().collect::<HashSet<&String>>();
+                    let v2: HashSet<&String> = v[j].iter().collect::<HashSet<&String>>();
                     let common: Vec<String> = v1.intersection(&v2).cloned().cloned().collect();
                     dup_channel_list.extend(common);
                 }
@@ -688,8 +691,8 @@ pub mod parser {
 
     impl Mf4Wrapper {
         pub fn new(file: PathBuf) -> Result<Self, DynError> {
-            let buf = RefCell::new(BufReader::new(File::open(file)?));
-            let mdf = Mdf::new(&mut buf.borrow_mut())?;
+            let buf: RefCell<BufReader<File>> = RefCell::new(BufReader::new(File::open(file)?));
+            let mdf: Mdf = Mdf::new(&mut buf.borrow_mut())?;
             let mut channel_cache: HashMap<String, (usize, usize, usize)> = HashMap::new();
             for (dg_index, dg) in mdf.data.iter().enumerate() {
                 for (cg_index, cg) in dg.get_channle_groups().iter().enumerate() {
@@ -698,7 +701,7 @@ pub mod parser {
                     }
                 }
             }
-            let master_cache = LruCache::new(NonZeroUsize::new(5).unwrap());
+            let master_cache: LruCache<(usize, usize), DataValue> = LruCache::new(NonZeroUsize::new(5).unwrap());
             Ok(Self {
                 mdf,
                 buf,

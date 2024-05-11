@@ -12,7 +12,7 @@ pub mod channel {
     use crate::components::si::sourceinfo::SourceInfo;
     use crate::components::cg::channelgroup::ChannelGroup;
     use crate::data_serde::{bytes_and_bits, right_shift_bytes, DataValue, FromBeBytes, FromLeBytes, UTF16String};
-    use crate::components::dx::dataxxx::read_data_block;
+    use crate::components::dx::dataxxx::{read_data_block, VirtualBuf};
     use crate::components::ca::channelarray::ChannelArray;
     
     type DynError = Box<dyn std::error::Error>;
@@ -41,8 +41,10 @@ pub mod channel {
         bytes_num: u32,
         master: bool,
         cn_data: u64,
-        sub_channels: Option<Vec<Channel>>,
-        array: Option<ChannelArray>
+        sub_channels: Option<Vec<Channel>>,   // for composed signals; also for MLSD channel
+        array: Option<ChannelArray>,
+        cn_flags: u32,
+        cn_compositon: u64,
     }
 
     impl Channel {
@@ -59,7 +61,7 @@ pub mod channel {
                                 .unwrap_or("".to_string());
             let cn_type: u8 = info.get_data_value_first("cn_type").ok_or("cn_type not found")?;
             let master: bool = match cn_type {
-                0 | 1 => false,
+                0 | 1 | 5 | 6 => false,  // 5 :: MLSD 
                 2 | 3 => true,
                 _ => return Err(format!("cn_type {} not supportted yet.", cn_type).into()),
             };
@@ -78,7 +80,7 @@ pub mod channel {
             let bytes_num: u32 = (bit_count as f32 / 8.0).ceil() as u32;
             let cn_data: u64 = info.get_link_offset_normal("cn_data").unwrap_or(0);
             let cn_compositon = info.get_link_offset_normal("cn_composition").unwrap_or(0);
-            let (sub_channels, array) = if let Ok(block_type) = peek_block_type(buf, cn_compositon) {
+            let (mut sub_channels, array) = if let Ok(block_type) = peek_block_type(buf, cn_compositon) {
                 match block_type.as_str() {
                     "CN" => {
                         if data_type == 10 {
@@ -102,6 +104,18 @@ pub mod channel {
                     _ => (None, None)
                 }
             } else { (None, None) };
+            let cn_flags: u32 = info.get_data_value_first::<u32>("cn_flags").ok_or("CN flags not found")?;
+            if cn_type == 5u8 {
+                if cn_data != 0x00u64 {
+                    if let Ok(ch) = Channel::new(buf, cn_data) {
+                        sub_channels = Some(vec![ch]);
+                    } else {
+                        return Err("CN data should be a channel for MLSD channel.".into())
+                    }
+                } else {
+                    return Err("CN data should not be empty for MLSD channel.".into())
+                }
+            }
             Ok(Self {
                 name,
                 source,
@@ -119,6 +133,8 @@ pub mod channel {
                 cn_data,
                 sub_channels,
                 array,
+                cn_flags,
+                cn_compositon
             })
         }
 
@@ -128,6 +144,10 @@ pub mod channel {
 
         pub fn get_sync_type(&self) -> &SyncType {
             &self.sync_type
+        }
+
+        pub fn get_cn_flags(&self) -> u32 {
+            self.cn_flags
         }
 
         pub fn get_cn_type(&self) -> &u8 {
@@ -170,29 +190,6 @@ pub mod channel {
             self.bit_offset
         }
 
-        pub fn from_bytes<T>(&self, rec_bytes: &Vec<u8>) -> Result<T, DynError> 
-        where T: FromBeBytes + FromLeBytes
-        {
-            let bytes_to_read = self.bytes_num;
-            let raw_data = rec_bytes[self.byte_offset as usize..
-                                (self.byte_offset + bytes_to_read) as usize].to_vec();
-            let cn_data = if self.bit_offset != 0 {
-                let mut new_bytes = right_shift_bytes(&raw_data, self.bit_offset)?;
-                bytes_and_bits(&mut new_bytes, self.bit_count);
-                new_bytes
-            } else {
-                raw_data
-            };
-            let mut data_buf: Cursor<Vec<u8>> = Cursor::new(cn_data);
-            match self.data_type {
-                // only distinguish little-edian and big-endian here. Concrete data types are handled in the up
-                // level functions.
-                0|2|4|6|7|8 => Ok(T::from_le_bytes(&mut data_buf)),
-                1|3|5|9 => Ok(T::from_be_bytes(&mut data_buf)),
-                _ => Err("data type not supportted.".into()),
-            }
-        }
-
         pub fn is_master(&self) -> bool {
             self.master
         }
@@ -202,9 +199,15 @@ pub mod channel {
             if self.get_cn_type() == &1 { 
                 // special case for VLSD ; record bytes are only offset of SD blocks 
                 return Ok(DataValue::UINT64(self.gen_value_vec::<u64>(file, dg, cg)?))
+            } else if self.get_cn_type() == &6 || self.get_cn_type() == &3{ // virtual data channel
+                if self.get_data_type() == 0 {
+                    return Ok(DataValue::UINT64((0..cg.get_cycle_count()).collect()))
+                } else {
+                    return Err("Virtual data channel only support little-edian unsigned interger data type".into())
+                }
             }
             match self.get_data_type() {
-                 0 | 1 => {
+                0 | 1 => {
                     if bits <= 8 {
                         Ok(DataValue::UINT8(self.gen_value_vec(file, dg, cg)?))
                     } else if bits>8 && bits <= 16 {
@@ -252,10 +255,27 @@ pub mod channel {
             }
         }
 
+        fn get_byte_array(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<Vec<Vec<u8>>, DynError> {
+            let mut bytes_array_vec: Vec<Vec<u8>> = Vec::new();
+            for i in 0..cg.get_cycle_count() {
+                let rec_data: Vec<u8> = dg.get_cg_data(cg.get_record_id(), i, file)
+                                          .ok_or("error during get cg record bytes")?;
+                let raw_data: Vec<u8> = rec_data[self.byte_offset as usize
+                                            ..(self.byte_offset+self.get_bytes_num()) as usize].to_vec();
+                let bytes_array: Vec<u8> = if self.bit_offset != 0 {
+                    let mut arr: Vec<u8> = right_shift_bytes(&raw_data, self.bit_offset)?;
+                    bytes_and_bits(&mut arr, self.bit_count);
+                    arr
+                } else { raw_data };
+                bytes_array_vec.push(bytes_array);
+            }
+            Ok(bytes_array_vec)
+        }
+
         pub fn get_data(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
-            if self.data_type == 10 && self.sub_channels.is_some() {   // for compact structure
+            if self.data_type == 10 && self.sub_channels.is_some() && self.cn_compositon != 0{   // for compact structure
                 let mut value_map: IndexMap<String, DataValue> = IndexMap::new();
-                for cn in self.sub_channels.as_ref().unwrap() {
+                for cn in self.sub_channels.as_ref().unwrap() {  // Currently, this structure decompose is done while get_data runtime; however this process should be done in channel's consturction time
                     cn.get_data(file, dg, cg)  // this could be recursive
                       .and_then(|data| {
                         value_map.insert(cn.get_name().to_string(), data);
@@ -263,10 +283,12 @@ pub mod channel {
                       }).unwrap_or(());    
                 }
                 return Ok(DataValue::STRUCT(value_map))
+            } else if self.data_type == 10 { // for pure BYTEARRAY
+                return Ok(DataValue::BYTEARRAY(self.get_byte_array(file, dg, cg)?))
             }
-            let data_raw = self.get_data_raw(file, dg, cg)?;
+            let data_raw: DataValue = self.get_data_raw(file, dg, cg)?;
             if self.get_cn_type() == &1 {                                 // for VLSD with SD blocks; not suitable for VLSD with channel groups
-                let offsets = data_raw.try_into()?;
+                let offsets: Vec<u64> = data_raw.try_into()?;
                 return self.parse_sd_data(file, &offsets)
             }
             if data_raw.is_num() {
@@ -286,34 +308,60 @@ pub mod channel {
             let mut values: Vec<T> = Vec::new();
             for i in 0..cg.get_cycle_count() {
                 let rec_data = dg.get_cg_data(cg.get_record_id(), i, file)
-                                          .ok_or("Invalid record id or cycle count.")?;
+                                        .ok_or("Invalid record id or cycle count.")?;
                 values.push(self.from_bytes::<T>(&rec_data)?);
             }
             Ok(values)
         }
 
+        pub fn from_bytes<T>(&self, rec_bytes: &Vec<u8>) -> Result<T, DynError> 
+        where T: FromBeBytes + FromLeBytes
+        {
+            let raw_data: Vec<u8> = rec_bytes[self.byte_offset as usize..
+                                (self.byte_offset + self.get_bytes_num()) as usize].to_vec();
+            let cn_data: Vec<u8> = if self.bit_offset != 0 {
+                let mut new_bytes: Vec<u8> = right_shift_bytes(&raw_data, self.bit_offset)?;
+                bytes_and_bits(&mut new_bytes, self.bit_count);
+                new_bytes
+            } else {
+                raw_data
+            };
+            let mut data_buf: Cursor<Vec<u8>> = Cursor::new(cn_data);
+            match self.data_type {
+                // only distinguish little-edian and big-endian here. Concrete data types are handled in the up
+                // level functions.
+                0|2|4|6|7|8 => Ok(T::from_le_bytes(&mut data_buf)),
+                1|3|5|9 => Ok(T::from_be_bytes(&mut data_buf)),
+                _ => Err("data type not supportted.".into()),
+            }
+        }
+
+        fn get_bytes_num(&self) -> u32 {
+            self.bytes_num
+        }
+
         fn parse_sd_data(&self, file: &mut BufReader<File>, offsets: &Vec<u64>) -> Result<DataValue, DynError> {
-            let data_blocks = read_data_block(file, self.cn_data)?;
+            let data_blocks: Box<dyn VirtualBuf> = read_data_block(file, self.cn_data)?;
             let mut sd_data: Vec<String> = Vec::new();  // todo: is there any other possible data types?
             for offset in offsets.iter() {
-                let mut four_bytes = [0u8; 4];
+                let mut four_bytes: [u8; 4] = [0u8; 4];
                 data_blocks.read_virtual_buf(file, *offset, &mut four_bytes)?;
-                let length = u32::from_le_bytes(four_bytes);
-                let mut data_bytes = vec![0u8; length as usize];
+                let length: u32 = u32::from_le_bytes(four_bytes);
+                let mut data_bytes: Vec<u8> = vec![0u8; length as usize];
                 data_blocks.read_virtual_buf(file, *offset + 4, &mut data_bytes)?;
                 match self.get_data_type() {
                     6 | 7 => {
-                        let raw = String::from_utf8(data_bytes)?;
+                        let raw: String = String::from_utf8(data_bytes)?;
                         sd_data.push(raw.trim_end_matches('\0').to_string());
                     },
                     8 => {
-                        let mut data = Cursor::new(data_bytes);
-                        let u16str = UTF16String::from_le_bytes(&mut data);
+                        let mut data: Cursor<Vec<u8>> = Cursor::new(data_bytes);
+                        let u16str: UTF16String = UTF16String::from_le_bytes(&mut data);
                         sd_data.push(u16str.inner.trim_end_matches('\0').to_string());
                     },
                     9 => {
-                        let mut data = Cursor::new(data_bytes);
-                        let u16str = UTF16String::from_be_bytes(&mut data);
+                        let mut data: Cursor<Vec<u8>> = Cursor::new(data_bytes);
+                        let u16str: UTF16String = UTF16String::from_be_bytes(&mut data);
                         sd_data.push(u16str.inner.trim_end_matches('\0').to_string());
                     },
                     num => {
@@ -338,12 +386,12 @@ pub mod channel {
                 Err("Not an array element channel.".into())
             } else {
                 let mut channels: Vec<Self> = Vec::new();  // element 0
-                let ca = self.get_array().unwrap();
-                let indexes = ca.generate_array_indexs();
-                let names = ca.generate_array_names(self.get_name());
+                let ca: &ChannelArray = self.get_array().unwrap();
+                let indexes: Vec<Vec<usize>> = ca.generate_array_indexs();
+                let names: Vec<String> = ca.generate_array_names(self.get_name());
                 for (index, name) in indexes.iter().zip(names.iter()) {
-                    let new_bytes_offset = ca.calculate_byte_offset(index)?;
-                    let mut new_channel = self.clone();
+                    let new_bytes_offset: u32 = ca.calculate_byte_offset(index)?;
+                    let mut new_channel: Channel = self.clone();
                     new_channel.change_byte_offset(new_bytes_offset);
                     new_channel.set_name(name.to_string());
                     channels.push(new_channel);

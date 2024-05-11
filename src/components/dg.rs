@@ -158,9 +158,9 @@ pub mod datagroup {
 
     impl DataGroup {
         pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
-            let dg_desc = get_block_desc_by_name("DG".to_string()).unwrap();
-            let info = dg_desc.try_parse_buf(buf, offset)?;
-            let rec_id_size = match info.get_data_value_first::<u8>("dg_rec_id_size") {
+            let dg_desc: &crate::block::BlockDesc = get_block_desc_by_name("DG".to_string()).unwrap();
+            let info: crate::block::BlockInfo = dg_desc.try_parse_buf(buf, offset)?;
+            let rec_id_size: RecIDSize = match info.get_data_value_first::<u8>("dg_rec_id_size") {
                 Some(0) => RecIDSize::NORECID,
                 Some(1) => RecIDSize::UINT8,
                 Some(2) => RecIDSize::UINT16,
@@ -168,16 +168,17 @@ pub mod datagroup {
                 Some(8) => RecIDSize::UINT64,
                 _ => return Err("Unknown rec_id_size".into())
             };
-            let comment = get_clean_text(buf, info.get_link_offset_normal("dg_md_comment").unwrap())
+            let comment: String = get_clean_text(buf, info.get_link_offset_normal("dg_md_comment").unwrap())
                                                             .unwrap_or("".to_string());
-            let data = info.get_link_offset_normal("dg_data").unwrap();
+            let data: u64 = info.get_link_offset_normal("dg_data").unwrap();
             let cg_links: Vec<u64> = get_child_links(buf, 
                                     info.get_link_offset_normal("dg_cg_first").unwrap(), "CG").unwrap();
             let mut channel_groups: Vec<ChannelGroup> = Vec::new();
-            cg_links.into_iter().for_each(|off| {
-                let cg: ChannelGroup = ChannelGroup::new(buf, off).unwrap();
-                channel_groups.push(cg)});
-            let sorted = match channel_groups.len() {
+            for link in cg_links {
+                let cg: ChannelGroup = ChannelGroup::new(buf, link)?; // fails to construct the whole dg if any cg parsing error exists
+                channel_groups.push(cg);
+            }
+            let sorted: bool = match channel_groups.len() {
                 0 | 1 => true,
                 _ => false
             };
@@ -259,8 +260,9 @@ pub mod datagroup {
         }
 
         pub fn get_all_channel_names(&self) -> Vec<String> {
-            self.channel_groups.iter()
-                               .flat_map(|cg| cg.get_channel_names()).collect()
+            let names: Vec<String> = self.channel_groups.iter()
+                               .flat_map(|cg| cg.get_channel_names()).collect();
+            names   // easy to debug
         }
 
         pub fn get_rec_id_size(&self) -> &RecIDSize {

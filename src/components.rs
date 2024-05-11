@@ -18,7 +18,7 @@ pub mod components_test {
     use crate::components::cc::conversion::*;
     use crate::components::dg::datagroup::DataGroup;
     use crate::components::ca::channelarray::ChannelArray;
-    use super::dx::dataxxx::{DataLink, VirtualBuf}; 
+    use super::dx::dataxxx::{DataLink, VirtualBuf, DZBlock}; 
     use crate::data_serde::DataValue;
     use rust_embed::RustEmbed;
     use std::io::BufReader;
@@ -175,7 +175,7 @@ pub mod components_test {
         let offset: u64 = 0xdbc0;
         let mut buf = buffer.lock().unwrap();
         let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
-        println!("{:?}", dl);
+        println!("{}", dl);
     }
 
     #[rstest]
@@ -183,7 +183,7 @@ pub mod components_test {
         let offset: u64 = 0x8F10;
         let mut buf = buffer.lock().unwrap();
         let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
-        println!("{:?}", dl);
+        println!("{}", dl);
         assert_eq!(dl.get_num_of_blocks(), 3);
         assert_eq!(dl.get_start_offsets_in_file(), &vec![59528, 321912, 597648]);
         let mut data_buf = [0u8; 20];
@@ -196,7 +196,7 @@ pub mod components_test {
         let offset: u64 = 0x9BD8;  // this dlblock points to one DT: 0x9D328
         let mut buf = buffer.lock().unwrap();
         let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
-        println!("{:?}", dl);
+        println!("{}", dl);
         let mut data_buf = [0u8; 10];
         dl.read_virtual_buf(&mut buf, 0, &mut data_buf).unwrap();
         assert_eq!(dl.get_num_of_blocks(), 1);
@@ -211,5 +211,19 @@ pub mod components_test {
         let mut buf = BufReader::new(File::open("./test/demo.mf4").unwrap());
         let ca = ChannelArray::new(&mut buf, 0xD8E0).unwrap();
         println!("{:?}", ca);
+    }
+
+    #[rstest]
+    fn test_dz_blocks() {
+        let mut buf = BufReader::new(File::open("./test/Vector_SingleDZ_Deflate.mf4").unwrap());
+        let dz = DZBlock::new(&mut buf, 0x768).unwrap();
+        println!("{:?}", dz.get_data_len());
+    }
+
+    #[rstest]
+    fn test_dz_blocks1() {
+        let mut buf = BufReader::new(File::open("./test/12.mf4").unwrap());
+        let dz = DZBlock::new(&mut buf, 0x33e40).unwrap();
+        println!("{:?}", dz.get_data_len());
     }
 }

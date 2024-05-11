@@ -25,29 +25,29 @@ pub mod channelgroup {
         pub fn new(buf:&mut BufReader<File>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
             let cg_desc: &'static BlockDesc = get_block_desc_by_name("CG".to_string()).unwrap();
             let info: BlockInfo = cg_desc.try_parse_buf(buf, offset).unwrap();
-            let acq_name = get_clean_text(buf, info.get_link_offset_normal("cg_tx_acq_name").unwrap())
+            let acq_name: String = get_clean_text(buf, info.get_link_offset_normal("cg_tx_acq_name").unwrap())
                                     .unwrap_or("".to_owned());  // Nil is allowed
-            let acq_source = SourceInfo::new(buf, info.get_link_offset_normal("cg_si_acq_source").unwrap()).unwrap();
-            let comments = get_clean_text(buf, info.get_link_offset_normal("cg_md_comment").unwrap())
+            let acq_source: SourceInfo = SourceInfo::new(buf, info.get_link_offset_normal("cg_si_acq_source").unwrap()).unwrap();
+            let comments: String = get_clean_text(buf, info.get_link_offset_normal("cg_md_comment").unwrap())
                                     .unwrap_or("".to_owned());   // Nil is allowed
-            let path_sep = match info.get_data_value_first::<u16>("cg_path_separator") {
+            let path_sep: String = match info.get_data_value_first::<u16>("cg_path_separator") {
                 Some(0x2F) => "/".to_owned(),
                 Some(0x5C) => "\\".to_owned(),
                 _ => ".".to_owned(),
             };
-            let record_id = info.get_data_value_first("cg_record_id")
+            let record_id: u64 = info.get_data_value_first("cg_record_id")
                                     .ok_or("cg_data_bytes not found")?;
-            let cycle_count = info.get_data_value_first("cg_cycle_count")
+            let cycle_count: u64 = info.get_data_value_first("cg_cycle_count")
                                     .ok_or("cg_cycle_count not found")?;
-            let data_bytes = info.get_data_value_first("cg_data_bytes")
+            let data_bytes: u32 = info.get_data_value_first("cg_data_bytes")
                                     .ok_or("cg_data_bytes not found")?;
             let invalid_bytes: u32 = info.get_data_value_first("cg_inval_bytes")                                                                                                                                      
                                     .ok_or("cg_invalid_bytes not found")?;
-            let mut channels = Vec::new();
-            let cn_link_list = get_child_links(buf, info.get_link_offset_normal("cg_cn_first").unwrap(), "CN").unwrap();
+            let mut channels: Vec<Channel> = Vec::new();
+            let cn_link_list: Vec<u64> = get_child_links(buf, info.get_link_offset_normal("cg_cn_first").unwrap(), "CN").unwrap();
             let mut master: Option<Channel> = None;
             cn_link_list.into_iter().for_each(|cn_link| {
-                let cn = Channel::new(buf, cn_link).unwrap();
+                let cn: Channel = Channel::new(buf, cn_link).unwrap();
                 if cn.is_master() {
                     master = Some(cn);
                 } else if cn.get_array().is_some() {
@@ -113,9 +113,10 @@ pub mod channelgroup {
         }
 
         pub fn get_channel_names(&self) -> Vec<String> {
-            self.channels.iter()
+            let names: Vec<String> = self.channels.iter()
                 .map(|c| c.get_name().to_owned())
-                .collect()
+                .collect();
+            names
         }
 
         pub fn get_master(&self) -> Option<&Channel> {

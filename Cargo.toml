@@ -17,3 +17,5 @@ chrono = "0.4.35"
 rstest = "0.18.2"
 half = "2.4.1"
 lru = "0.12.3"
+flate2 = { version = "1.0.17", features = ["zlib-ng"], default-features = false }
+inflate = "0.4.5"

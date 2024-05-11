@@ -348,6 +348,7 @@ pub enum DataValue {
     SINGLE(Vec<f32>),
     FLOAT16(Vec<f16>),
     STRUCT(IndexMap<String, DataValue>),
+    BYTEARRAY(Vec<Vec<u8>>),
 }
 
 impl DataValue {
@@ -376,6 +377,7 @@ impl TryFrom<DataValue> for Vec<u8> {
         match value {
             DataValue::BYTE(s) => Ok(s),
             DataValue::UINT8(s) => Ok(s),
+            DataValue::CHAR(s) => Ok(s.into_bytes()),
             _ => Err("DataValue is not a uint8 or byte")
         }
     }
