@@ -354,11 +354,17 @@ pub enum DataValue {
 impl DataValue {
     pub fn is_num(&self) -> bool {
         match self {
-            &DataValue::CHAR(_) | &DataValue::STRINGS(_) => false,
+            &DataValue::CHAR(_) | &DataValue::STRINGS(_) | &DataValue::BYTEARRAY(_) | &DataValue::STRUCT(_) => false,
             _ => true
         }
     }
 
+    pub fn is_strings(&self) -> bool {
+        match self {
+            &DataValue::STRINGS(_) => true,
+            _ => false
+        }
+    }
 }
 
 impl TryFrom<DataValue> for String {

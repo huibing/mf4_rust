@@ -47,15 +47,31 @@ pub mod channelgroup {
             let cn_link_list: Vec<u64> = get_child_links(buf, info.get_link_offset_normal("cg_cn_first").unwrap(), "CN").unwrap();
             let mut master: Option<Channel> = None;
             cn_link_list.into_iter().for_each(|cn_link| {
-                let cn: Channel = Channel::new(buf, cn_link).unwrap();
-                if cn.is_master() {
-                    master = Some(cn);
-                } else if cn.get_array().is_some() {
-                    if let Ok(cn_array) = cn.generate_array_element_channel() {
-                        channels.extend(cn_array);
+                if let Ok(mut cn) = Channel::new(buf, cn_link) {
+                    if cn.is_bus_event() && !acq_name.is_empty(){
+                        let mut name = String::from("");
+                        if !acq_name.is_empty() {
+                            name.push_str(format!("{}.", acq_name).as_str());
+                        }
+                        name.push_str(cn.get_name());
+                        if !cn.get_source().get_name().is_empty() {
+                            name.push_str(format!(".{}", cn.get_source().get_name()).as_str());
+                        } else if !cn.get_source().get_path().is_empty() {
+                            name.push_str(format!(".{}", cn.get_source().get_path()).as_str());
+                        } else {/* do nothing */}
+                        cn.set_name(name);   // change name for Bus Logging to avoid name duplication
+                    }
+                    if cn.is_master() {
+                        master = Some(cn);
+                    } else if cn.get_array().is_some() {
+                        if let Ok(cn_array) = cn.generate_array_element_channel() {
+                            channels.extend(cn_array);
+                        }
+                    } else {
+                        channels.push(cn);
                     }
                 } else {
-                    channels.push(cn);
+                    println!("Error reading channel at {}", cn_link);
                 }
             });
             Ok(Self {

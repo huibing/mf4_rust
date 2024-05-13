@@ -154,6 +154,14 @@ pub mod channel {
             &self.cn_type
         }
 
+        pub fn is_bus_event(&self) -> bool {
+            (self.cn_flags & (0x01<<10)) != 0
+        }
+
+        pub fn get_sub_channels(&self) -> Option<&Vec<Channel>> {
+            self.sub_channels.as_ref()
+        }
+
         pub fn get_array(&self) -> Option<&ChannelArray> {
             self.array.as_ref()
         }
@@ -192,6 +200,10 @@ pub mod channel {
 
         pub fn is_master(&self) -> bool {
             self.master
+        }
+
+        pub fn is_composition(&self) -> bool {
+            self.data_type == 10 && self.sub_channels.is_some() && self.cn_compositon != 0
         }
 
         pub fn get_data_raw(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
@@ -273,19 +285,22 @@ pub mod channel {
         }
 
         pub fn get_data(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
-            if self.data_type == 10 && self.sub_channels.is_some() && self.cn_compositon != 0{   // for compact structure
+            /* handle some exceptions first */
+            if self.is_composition() {   // for compact structure
                 let mut value_map: IndexMap<String, DataValue> = IndexMap::new();
                 for cn in self.sub_channels.as_ref().unwrap() {  // Currently, this structure decompose is done while get_data runtime; however this process should be done in channel's consturction time
                     cn.get_data(file, dg, cg)  // this could be recursive
                       .and_then(|data| {
                         value_map.insert(cn.get_name().to_string(), data);
                         Ok(())
-                      }).unwrap_or(());    
+                      }).unwrap_or(());
                 }
                 return Ok(DataValue::STRUCT(value_map))
-            } else if self.data_type == 10 { // for pure BYTEARRAY
+            } else if self.data_type == 10 && self.get_array().is_none() { // for pure BYTEARRAY
                 return Ok(DataValue::BYTEARRAY(self.get_byte_array(file, dg, cg)?))
             }
+
+            /* generic process */
             let data_raw: DataValue = self.get_data_raw(file, dg, cg)?;
             if self.get_cn_type() == &1 {                                 // for VLSD with SD blocks; not suitable for VLSD with channel groups
                 let offsets: Vec<u64> = data_raw.try_into()?;
@@ -298,6 +313,8 @@ pub mod channel {
                 } else {
                     Ok(DataValue::STRINGS(float_data.into_iter().map(|f| self.get_conversion().convert_to_text(file, f).unwrap()).collect()))  // todo: remove unwrap handle errors
                 }
+            } else if data_raw.is_strings(){
+                Ok(data_raw)   // place holders
             } else {
                 Ok(data_raw)
             }
@@ -319,13 +336,12 @@ pub mod channel {
         {
             let raw_data: Vec<u8> = rec_bytes[self.byte_offset as usize..
                                 (self.byte_offset + self.get_bytes_num()) as usize].to_vec();
-            let cn_data: Vec<u8> = if self.bit_offset != 0 {
-                let mut new_bytes: Vec<u8> = right_shift_bytes(&raw_data, self.bit_offset)?;
-                bytes_and_bits(&mut new_bytes, self.bit_count);
-                new_bytes
+            let mut cn_data: Vec<u8> = if self.bit_offset != 0 {
+                right_shift_bytes(&raw_data, self.bit_offset)?
             } else {
                 raw_data
             };
+            bytes_and_bits(&mut cn_data, self.bit_count);
             let mut data_buf: Cursor<Vec<u8>> = Cursor::new(cn_data);
             match self.data_type {
                 // only distinguish little-edian and big-endian here. Concrete data types are handled in the up
@@ -372,12 +388,16 @@ pub mod channel {
             Ok(DataValue::STRINGS(sd_data))
         }
 
-        fn set_name(&mut self, name: String) {
+        pub fn set_name(&mut self, name: String) {
             self.name = name;
         }
 
-        fn change_byte_offset(&mut self, offset: u32) {
+        pub fn change_byte_offset(&mut self, offset: u32) {
             self.byte_offset = offset;
+        }
+
+        pub fn change_source(&mut self, source: SourceInfo) {
+            self.source = source;
         }
 
         pub fn generate_array_element_channel(self) -> Result<Vec<Self>, DynError> {
@@ -389,11 +409,13 @@ pub mod channel {
                 let ca: &ChannelArray = self.get_array().unwrap();
                 let indexes: Vec<Vec<usize>> = ca.generate_array_indexs();
                 let names: Vec<String> = ca.generate_array_names(self.get_name());
+                let si = self.get_source();
                 for (index, name) in indexes.iter().zip(names.iter()) {
                     let new_bytes_offset: u32 = ca.calculate_byte_offset(index)?;
                     let mut new_channel: Channel = self.clone();
                     new_channel.change_byte_offset(new_bytes_offset);
                     new_channel.set_name(name.to_string());
+                    new_channel.change_source(si.clone());
                     channels.push(new_channel);
                 }
                 Ok(channels)

@@ -87,7 +87,7 @@ pub mod dataxxx {
             }
             if let Some(data) = dz_info.retrieve_data_value("unparsed_data") {
                 let raw_data: Vec<u8> = data.try_into()?;
-                let mut decoder = ZlibDecoder::new(&raw_data[..]);
+                let mut decoder: ZlibDecoder<&[u8]> = ZlibDecoder::new(&raw_data[..]);
                 let mut ori_data: Vec<u8> = Vec::new();
                 decoder.read_to_end(&mut ori_data)?;
                 if ori_data.len() as u64 != ori_data_len {
@@ -102,6 +102,7 @@ pub mod dataxxx {
             } else {
                 Err("Dzblock does not contain any data.".into())
             }
+            
         }
 
         fn get_orig_len(&self) -> u64 {

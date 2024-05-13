@@ -649,7 +649,7 @@ pub mod parser {
             self.data.iter().flat_map(|dg| dg.get_all_channel_names()).collect()
         }
 
-        pub fn check_duplicate_channel(&self) -> Option<Vec<String>> {
+        pub fn check_duplicate_channel(&self) -> Option<Vec<String>> { // for debug purpose
             let mut dup_channel_list: Vec<String> = Vec::new();
             let v:Vec<Vec<String>> = self.data.iter().map(|dg| dg.get_all_channel_names()).collect();
             for i in 0..v.len(){
@@ -754,6 +754,10 @@ pub mod parser {
         
         pub fn is_sorted(&self) -> bool {
             self.mdf.data.iter().all(|dg| dg.is_sorted())
+        }
+
+        pub fn check_duplicated(&self) -> Option<Vec<String>>{
+            self.mdf.check_duplicate_channel()
         }
         
     }
