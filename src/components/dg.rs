@@ -129,6 +129,8 @@ pub mod datagroup {
         data_block: Box<dyn VirtualBuf>,  // one datagroup have one data_block
     }
 
+    unsafe impl Send for DataGroup {}
+
     fn read_rec_id(rec_id_size: RecIDSize, buf: &Box<dyn VirtualBuf>, from:&mut BufReader<File>, v_offset: u64) -> Result<(u64, u8), DynError> {
         // read record id to process ; Note this function will move buf's cursor
         // u64: record id u8: bytes read
@@ -157,7 +159,7 @@ pub mod datagroup {
     }
 
     impl DataGroup {
-        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
+        pub fn new_unchecked(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
             let dg_desc: &crate::block::BlockDesc = get_block_desc_by_name("DG".to_string()).unwrap();
             let info: crate::block::BlockInfo = dg_desc.try_parse_buf(buf, offset)?;
             let rec_id_size: RecIDSize = match info.get_data_value_first::<u8>("dg_rec_id_size") {
@@ -187,36 +189,19 @@ pub mod datagroup {
                 rec_id_map.insert(cg.get_record_id(), 
                 (cg.get_sample_total_bytes(), cg.get_cycle_count()));
             });
-            let mut offsets_map: HashMap<u64, Vec<u64>> = HashMap::new(); 
-            let mut cycle_count_map: HashMap<u64, u64> = HashMap::new(); // used to temporarily store cycle count to verify if data corrupted or invalid
             let data_block = read_data_block(buf, data)?;
             let data_length = data_block.get_data_len(); // skip link_count
-            let mut cur_off: u64 = 0; // virtual offset always start from 0
-            while cur_off < data_length {
-                let rec_id: u64;
-                let id_size: u8;
-                if !sorted {
-                    (rec_id, id_size) = read_rec_id(rec_id_size, &data_block, buf, cur_off)?;
-                } else {
-                    rec_id = channel_groups.get(0).and_then(|cg| Some(cg.get_record_id())).or(Some(0u64)).unwrap();
-                    id_size = 0u8;
-                }
-                cur_off += id_size as u64;
-                if !sorted{ /* for sorted dg, no offsets_map cache needed, it's easy to caculate record offset */
+            let mut offsets_map: HashMap<u64, Vec<u64>> = HashMap::new();
+            if !sorted {  // if dg is not sorted, we need to read all the records to get the offsets to improve runtime performance
+                let mut cur_off: u64 = 0; // virtual offset always start from 0
+                while cur_off < data_length {
+                    let (rec_id, id_size) = read_rec_id(rec_id_size, &data_block, buf, cur_off)?;
+                    cur_off += id_size as u64;
                     offsets_map.entry(rec_id)
                            .and_modify(|v| v.push(cur_off))
                            .or_insert(vec![cur_off]);
-                }
-                let bytes_to_skip: u32 = rec_id_map.get(&rec_id).unwrap().0;  // skip this record's data field
-                cur_off += bytes_to_skip as u64;
-                cycle_count_map.entry(rec_id)
-                               .and_modify(|v| {*v += 1})
-                               .or_insert(1);
-            }
-            // check if cycle count is valid
-            for (rec_id, cycle_count) in cycle_count_map.iter() {
-                if rec_id_map.get(rec_id).unwrap().1 != *cycle_count {
-                    return Err("Data corrupted: Invalid record cycle count.".into());
+                    let bytes_to_skip: u32 = rec_id_map.get(&rec_id).unwrap().0;  // skip this record's data field
+                    cur_off += bytes_to_skip as u64;
                 }
             }
             Ok(Self { 
@@ -229,6 +214,36 @@ pub mod datagroup {
                 offsets_map,
                 data_block
              })
+        }
+
+        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
+            let dg = Self::new_unchecked(buf, offset)?;
+            let mut cur_off: u64 = 0; // virtual offset always start from 0
+            let mut cycle_count_map: HashMap<u64, u64> = HashMap::new();
+            while cur_off < dg.data_block.get_data_len() {
+                let rec_id: u64;
+                let id_size: u8;
+                if !dg.sorted {
+                    (rec_id, id_size) = read_rec_id(dg.rec_id_size, &dg.data_block, buf, cur_off)?;
+                } else {
+                    rec_id = dg.channel_groups.get(0).and_then(|cg| Some(cg.get_record_id())).or(Some(0u64)).unwrap();
+                    id_size = 0u8;
+                }
+                cur_off += id_size as u64;
+                let bytes_to_skip: u32 = dg.rec_id_map.get(&rec_id).unwrap().0;  // skip this record's data field
+                cur_off += bytes_to_skip as u64;
+                cycle_count_map.entry(rec_id)
+                               .and_modify(|v| {*v += 1})
+                               .or_insert(1);
+            }
+            
+            // check if cycle count is valid
+            for (rec_id, cycle_count) in cycle_count_map.iter() {
+                if dg.rec_id_map.get(rec_id).unwrap().1 != *cycle_count {
+                    return Err("Data corrupted: Invalid record cycle count.".into());
+                }
+            }
+            Ok(dg)
         }
 
         pub fn create_map(&self) -> HashMap<String, ChannelLink>{

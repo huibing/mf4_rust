@@ -20,7 +20,7 @@ pub mod dataxxx {
         
         fn get_data_len(&self) -> u64;
     }
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     pub struct DT{
         data_len: u64,
         data_offset: u64,   // absolute offset in file
@@ -30,7 +30,7 @@ pub mod dataxxx {
         /* This should also works for SD and RD blocks; they have samilar data structure  */
         pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError>{
             if offset == 0 {
-                return Err("Invalid data block offset".into());
+                return Err("Invalid data block offset: 0".into());
             }
             let mut data_buf = [0u8; 4];
             buf.seek(SeekFrom::Start(offset))?;
@@ -411,6 +411,9 @@ pub mod dataxxx {
     }
 
     pub fn read_data_block(buf: &mut BufReader<File>, offset: u64) -> Result<Box<dyn VirtualBuf>, DynError> {
+        if offset == 0 {
+            return Ok(Box::new(DT::default()))   //  dg_data could be nil with empty data
+        }
         let id: String = peek_block_type(buf, offset)?;
         match id.as_str() {
             "DT" | "SD" => Ok(Box::new(DT::new(buf, offset)?)),

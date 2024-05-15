@@ -307,7 +307,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
     impl BlockInfo {
         pub fn map_links(&mut self) -> Result<(), Box<dyn std::error::Error>> {
             match self.id.as_str() {
-                "##CA" | "##LD" => {  // these blocks have variable size links
+                "##LD" => {  // these blocks have variable size links
                     Err("Not Implemented".into())
                 }
                 "##CN" => {  // these blocks have variable size links
@@ -420,6 +420,8 @@ pub mod parser {
     use std::path::PathBuf;
     use std::fs::File;
     use std::cell::RefCell;
+    use std::thread;
+    use std::sync::mpsc;
     use byteorder::{LittleEndian, ByteOrder};
     use std::collections::{HashMap, HashSet};
     use chrono::DateTime;
@@ -625,12 +627,28 @@ pub mod parser {
             let mdfinfo = MdfInfo::new(file)?;
             let mut data = Vec::new();
             let dg_links = get_child_links(file, mdfinfo.first_dg_offset, "DG")?;
-            dg_links.iter().for_each(|dg_offset| {
-                match DataGroup::new(file, *dg_offset) {
-                    Ok(dg) => data.push(dg),
-                    Err(e) => println!("Error: {} ;failed to create DataGroup at offset: {}", e, dg_offset),
+            
+            thread::scope(|s| {
+                let (tx, rx) = mpsc::channel::<DataGroup>();
+                let mut dg_count: usize = 0;
+                let total_len = dg_links.len();
+                s.spawn(move || {
+                    dg_links.iter().for_each(|dg_offset| {
+                        match DataGroup::new_unchecked(file, *dg_offset) {
+                            Ok(dg) => tx.send(dg).unwrap(),
+                            Err(e) => println!("Error: {} ;failed to create DataGroup at offset: {}", e, dg_offset),
+                        }
+                    });
+                });
+                while let Ok(dg) = rx.recv() {
+                    data.push(dg);
+                    dg_count += 1;
+                    println!("total process: {}", dg_count as f64/total_len as f64 * 100.0);
                 }
             });
+            
+
+            
             Ok(Self{
                 mdfinfo,
                 data,

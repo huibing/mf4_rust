@@ -422,6 +422,34 @@ pub mod channel {
             }
         }
 
+        pub fn generate_composed_channels(&self) -> Result<Vec<Self>, DynError> {
+            /* recursive find */
+            if !self.is_composition() {
+                Err("Not a composition channel.".into())
+            } else  {
+                let mut channels: Vec<Self> = Vec::new();
+                let name = self.get_name();
+                let si = self.get_source();
+                for ch in self.get_sub_channels().unwrap().iter() {
+                    Self::recursive_compose_channels(&mut channels, name, ch, si);
+                }
+                Ok(channels)
+            }
+        }
+
+        fn recursive_compose_channels(channels: &mut Vec<Channel>, upper_name: &str, c: &Channel, si: &SourceInfo) {
+            let name: String = format!("{}.{}", upper_name, c.get_name());
+            let mut new_channel = c.clone();
+            new_channel.set_name(name.clone());
+            if !new_channel.is_composition() {
+                new_channel.change_source(si.clone());
+                channels.push(new_channel)
+            } else {
+                for sub_channel in new_channel.sub_channels.unwrap().iter() {
+                    Self::recursive_compose_channels(channels, &name, sub_channel, si);
+                }
+            }
+        }
     }
 
     impl Display for Channel {

@@ -1,6 +1,7 @@
 pub mod channelgroup {
     use std::io::BufReader;
     use std::fs::File;
+    use std::time::{Instant, Duration};
     use crate::block::{BlockInfo, BlockDesc};
     use crate::parser::{get_clean_text, get_block_desc_by_name, get_child_links};
     use crate::components::si::sourceinfo::SourceInfo;
@@ -18,7 +19,12 @@ pub mod channelgroup {
         invalid_bytes: u32,
         channels: Vec<Channel>,
         master: Option<Channel>,
+        cg_flags: u16,
+        is_vlsd: bool,
+        total_bytes: u64,   // for VLSD cg
     }
+
+    pub static mut CN_TIME: Duration = Duration::new(0, 0);
 
     impl ChannelGroup {
         
@@ -43,29 +49,29 @@ pub mod channelgroup {
                                     .ok_or("cg_data_bytes not found")?;
             let invalid_bytes: u32 = info.get_data_value_first("cg_inval_bytes")                                                                                                                                      
                                     .ok_or("cg_invalid_bytes not found")?;
+            let cg_flags: u16 = info.get_data_value_first("cg_flags").ok_or("cg_flags not found")?;
             let mut channels: Vec<Channel> = Vec::new();
-            let cn_link_list: Vec<u64> = get_child_links(buf, info.get_link_offset_normal("cg_cn_first").unwrap(), "CN").unwrap();
             let mut master: Option<Channel> = None;
-            cn_link_list.into_iter().for_each(|cn_link| {
+            let mut is_vlsd: bool = false;
+            let mut total_bytes: u64 = (data_bytes + invalid_bytes) as u64 * cycle_count ;
+            if cg_flags & 0x0001 != 0 {
+                is_vlsd = true;
+                total_bytes = data_bytes as u64 | (invalid_bytes as u64) << 32;
+            } else {
+                let cn_link_list: Vec<u64> = get_child_links(buf, info.get_link_offset_normal("cg_cn_first").unwrap(), "CN").unwrap();
+                cn_link_list.into_iter().for_each(|cn_link| {
+                let started = Instant::now();
                 if let Ok(mut cn) = Channel::new(buf, cn_link) {
-                    if cn.is_bus_event() && !acq_name.is_empty(){
-                        let mut name = String::from("");
-                        if !acq_name.is_empty() {
-                            name.push_str(format!("{}.", acq_name).as_str());
-                        }
-                        name.push_str(cn.get_name());
-                        if !cn.get_source().get_name().is_empty() {
-                            name.push_str(format!(".{}", cn.get_source().get_name()).as_str());
-                        } else if !cn.get_source().get_path().is_empty() {
-                            name.push_str(format!(".{}", cn.get_source().get_path()).as_str());
-                        } else {/* do nothing */}
-                        cn.set_name(name);   // change name for Bus Logging to avoid name duplication
-                    }
+                    Self::new_channel_name(&mut cn, &acq_name);
                     if cn.is_master() {
                         master = Some(cn);
                     } else if cn.get_array().is_some() {
                         if let Ok(cn_array) = cn.generate_array_element_channel() {
                             channels.extend(cn_array);
+                        }
+                    } else if cn.is_composition() {
+                        if let Ok(cn_composed) = cn.generate_composed_channels() {
+                            channels.extend(cn_composed);
                         }
                     } else {
                         channels.push(cn);
@@ -73,7 +79,13 @@ pub mod channelgroup {
                 } else {
                     println!("Error reading channel at {}", cn_link);
                 }
-            });
+                let elapsed = Instant::now().duration_since(started);
+                unsafe {
+                    CN_TIME += elapsed;
+                }
+                });
+            }
+            
             Ok(Self {
                 acq_name,
                 acq_source,
@@ -84,8 +96,27 @@ pub mod channelgroup {
                 data_bytes,
                 invalid_bytes,
                 channels,
-                master
+                master,
+                cg_flags,
+                is_vlsd,
+                total_bytes,
             })
+        }
+
+        fn new_channel_name(cn: &mut Channel, acq_name: &String) {
+            if cn.is_bus_event() && !acq_name.is_empty(){
+                let mut name = String::from("");
+                if !acq_name.is_empty() {
+                    name.push_str(format!("{}.", acq_name).as_str());
+                }
+                //name.push_str(cn.get_name());   in case of bus event, channel name is not used
+                if !cn.get_source().get_name().is_empty() {
+                    name.push_str(format!("{}", cn.get_source().get_name()).as_str());
+                } else if !cn.get_source().get_path().is_empty() {
+                    name.push_str(format!("{}", cn.get_source().get_path()).as_str());
+                } else {/* do nothing */}
+                cn.set_name(name);   // change name for Bus Logging to avoid name duplication
+            }
         }
 
         pub fn get_acq_name(&self) -> &str {

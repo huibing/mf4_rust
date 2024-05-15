@@ -27,28 +27,17 @@ fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
     }
 }
 
-
+use mf4_parse::components::cg::channelgroup::CN_TIME;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Instant::now();
-    let new: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/12.mf4"))?;
+    let new: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/Vector_Unsorted_VLSD.MF4"))?;
     let duration: Duration = Instant::now() - start_time;
     println!("load mf4 file time: {:?}", duration.as_secs_f64());
-    //println!("{:?}", new.get_channel_names());
-    display_channel_info("CAN_DataFrame_60.CAN_DataFrame.CAN10", &new);
-    if let Some(chs) = new.check_duplicated() {
-        println!("duplicated channels: {:?}", chs);
+    unsafe {
+        println!("CN time {:?}", CN_TIME);
     }
-    let data = new.get_channel_data("CAN_DataFrame_60.CAN_DataFrame.CAN10").unwrap();
-    match &data {
-        mf4_parse::data_serde::DataValue::STRUCT(value) => {
-            println!("{:?}", value.get("CAN_DataFrame.BRS").unwrap());
-        },
-        _ => {
-            println!("not struct data");
-        }
-    }
-    //println!("{:?}", data);
-
+    //println!("channel names: {:?}", new.get_channel_names());
+    display_channel_info("CAN_DataFrame_60.CAN5.CAN_DataFrame.DLC", &new);
     Ok(())
 }
 
@@ -64,8 +53,6 @@ pub mod test {
         let mf4: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/demo.mf4")).unwrap();
         let channel_names: Vec<String> = mf4.get_channel_names();
         println!("{:?}", channel_names);
-        let d: mf4_parse::data_serde::DataValue = mf4.get_channel_data("Nested_structures").unwrap();
-        println!("{:?}\n value ends\n", d);
         display_channel_info("Nested_structures", &mf4);
         display_channel_info("Channel_lookup_with_default_axis", &mf4);
         let new: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/string_and_array.mf4")).unwrap();
