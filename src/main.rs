@@ -30,14 +30,17 @@ fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
 use mf4_parse::components::cg::channelgroup::CN_TIME;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Instant::now();
-    let new: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/Vector_Unsorted_VLSD.MF4"))?;
+    let mut new: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/Vector_Unsorted_VLSD.MF4"))?;
     let duration: Duration = Instant::now() - start_time;
     println!("load mf4 file time: {:?}", duration.as_secs_f64());
     unsafe {
         println!("CN time {:?}", CN_TIME);
     }
-    //println!("channel names: {:?}", new.get_channel_names());
-    display_channel_info("CAN_DataFrame_60.CAN5.CAN_DataFrame.DLC", &new);
+    println!("channel names: {:?}", new.get_channel_names());
+    display_channel_info("Comment", &new);
+    display_channel_info("Write", &new);
+    println!("channel data: {:?}", new.get_channel_data("WriteTextToWriteWindow"));
+    println!("Corresponding master channel data: {:?}", new.get_channel_master_data("WriteTextToWriteWindow"));
     Ok(())
 }
 

@@ -146,6 +146,27 @@ pub mod channel {
             &self.sync_type
         }
 
+        fn is_cg_vlsd_channel(&self, buf: &mut BufReader<File>) -> bool {
+            if self.cn_type == 1u8 {
+                if self.cn_data != 0x00u64 {
+                    let block_type: String = peek_block_type(buf, self.cn_data).unwrap();
+                    match block_type.as_str() {
+                        "CG" => true,
+                        _ => false
+                    }
+                } else { false}
+            } else { false }
+        }
+
+        pub fn get_cg_rec_id(&self, buf: &mut BufReader<File>) -> Option<u64> {  // only for cg vlsd
+            if self.is_cg_vlsd_channel(buf) {
+                let cg_desc: &BlockDesc = get_block_desc_by_name("CG".to_string())?;
+                let cg_info = cg_desc.try_parse_buf(buf, self.cn_data).ok()?;
+                let rec_id: u64 = cg_info.get_data_value_first("cg_record_id")?;
+                Some(rec_id)
+            } else { None }
+        }
+
         pub fn get_cn_flags(&self) -> u32 {
             self.cn_flags
         }
@@ -209,7 +230,7 @@ pub mod channel {
         pub fn get_data_raw(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
             let bits: u32 = self.get_bit_size();
             if self.get_cn_type() == &1 { 
-                // special case for VLSD ; record bytes are only offset of SD blocks 
+                // special case for VLSD ; record bytes are only offset of SD blocks ; this is the same both for SD/CG type VLSD channels
                 return Ok(DataValue::UINT64(self.gen_value_vec::<u64>(file, dg, cg)?))
             } else if self.get_cn_type() == &6 || self.get_cn_type() == &3{ // virtual data channel
                 if self.get_data_type() == 0 {
@@ -302,7 +323,10 @@ pub mod channel {
 
             /* generic process */
             let data_raw: DataValue = self.get_data_raw(file, dg, cg)?;
-            if self.get_cn_type() == &1 {                                 // for VLSD with SD blocks; not suitable for VLSD with channel groups
+            if let Some(id) = self.get_cg_rec_id(file) {
+                let offsets: Vec<u64> = data_raw.try_into()?;
+                return self.parse_cg_vlsd(file, &offsets, id, dg)
+            } else if self.get_cn_type() == &1 {                                 // for VLSD with SD blocks; not suitable for VLSD with channel groups
                 let offsets: Vec<u64> = data_raw.try_into()?;
                 return self.parse_sd_data(file, &offsets)
             }
@@ -357,6 +381,7 @@ pub mod channel {
         }
 
         fn parse_sd_data(&self, file: &mut BufReader<File>, offsets: &Vec<u64>) -> Result<DataValue, DynError> {
+            /* for non-cg vlsd channel ; only support string type for now*/
             let data_blocks: Box<dyn VirtualBuf> = read_data_block(file, self.cn_data)?;
             let mut sd_data: Vec<String> = Vec::new();  // todo: is there any other possible data types?
             for offset in offsets.iter() {
@@ -386,6 +411,34 @@ pub mod channel {
                 }
             }
             Ok(DataValue::STRINGS(sd_data))
+        }
+
+        fn parse_cg_vlsd(&self, file: &mut BufReader<File>, offsets: &Vec<u64>, id: u64, dg: &DataGroup) -> Result<DataValue, DynError>{
+            /* for cg vlsd channel ; only support string type for now*/
+            let mut res: Vec<String> = Vec::new();
+            for i in 0..offsets.len() { // should be replaced by cg.cycle_count? 
+                let rec_data = dg.get_vlsd_cg_data(id, i as u64, file).ok_or("error during reading vlsd records")?;
+                match self.get_data_type() {
+                    6 | 7 => {
+                        let raw: String = String::from_utf8(rec_data)?;
+                        res.push(raw.trim_end_matches('\0').to_string());
+                    },
+                    8 => {
+                        let mut data: Cursor<Vec<u8>> = Cursor::new(rec_data);
+                        let u16str: UTF16String = UTF16String::from_le_bytes(&mut data);
+                        res.push(u16str.inner.trim_end_matches('\0').to_string());
+                    },
+                    9 => {
+                        let mut data: Cursor<Vec<u8>> = Cursor::new(rec_data);
+                        let u16str: UTF16String = UTF16String::from_be_bytes(&mut data);
+                        res.push(u16str.inner.trim_end_matches('\0').to_string());
+                    },
+                    num => {
+                        return Err(format!("Can not parse sd data with this type {}", num).into())
+                    }
+                }
+            }
+            Ok(DataValue::STRINGS(res))
         }
 
         pub fn set_name(&mut self, name: String) {
@@ -428,8 +481,8 @@ pub mod channel {
                 Err("Not a composition channel.".into())
             } else  {
                 let mut channels: Vec<Self> = Vec::new();
-                let name = self.get_name();
-                let si = self.get_source();
+                let name: &str = self.get_name();
+                let si: &SourceInfo = self.get_source();
                 for ch in self.get_sub_channels().unwrap().iter() {
                     Self::recursive_compose_channels(&mut channels, name, ch, si);
                 }

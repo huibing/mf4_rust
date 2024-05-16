@@ -7,7 +7,7 @@ pub mod channelgroup {
     use crate::components::si::sourceinfo::SourceInfo;
     use crate::components::cn::channel::Channel;
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct ChannelGroup {
         acq_name: String,
         acq_source: SourceInfo,  
@@ -85,7 +85,6 @@ pub mod channelgroup {
                 }
                 });
             }
-            
             Ok(Self {
                 acq_name,
                 acq_source,
@@ -100,6 +99,7 @@ pub mod channelgroup {
                 cg_flags,
                 is_vlsd,
                 total_bytes,
+                
             })
         }
 
@@ -117,6 +117,18 @@ pub mod channelgroup {
                 } else {/* do nothing */}
                 cn.set_name(name);   // change name for Bus Logging to avoid name duplication
             }
+        }
+
+        pub fn get_total_len(&self) -> u64 {
+            self.total_bytes
+        }
+
+        pub fn is_vlsd(&self) -> bool {
+            self.is_vlsd
+        }
+
+        pub fn get_cg_flags(&self) -> u16 {
+            self.cg_flags
         }
 
         pub fn get_acq_name(&self) -> &str {

@@ -6,7 +6,7 @@ pub mod datagroup {
     use crate::parser::{get_block_desc_by_name, get_clean_text, get_child_links};
     use crate::components::dx::dataxxx::{VirtualBuf, read_data_block};
     use crate::data_serde::{DataValue, FromLeBytes, FromBeBytes, UTF16String};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::io::BufReader;
     use std::fs::File;
     use std::fmt::Display;
@@ -185,9 +185,13 @@ pub mod datagroup {
                 _ => false
             };
             let mut rec_id_map: HashMap<u64, (u32, u64)> = HashMap::new();
+            let mut vlsd_rec_id: HashSet<u64> = HashSet::new();
             channel_groups.iter().for_each(|cg| {
                 rec_id_map.insert(cg.get_record_id(), 
                 (cg.get_sample_total_bytes(), cg.get_cycle_count()));
+                if cg.is_vlsd() {
+                    vlsd_rec_id.insert(cg.get_record_id());
+                }
             });
             let data_block = read_data_block(buf, data)?;
             let data_length = data_block.get_data_len(); // skip link_count
@@ -200,7 +204,14 @@ pub mod datagroup {
                     offsets_map.entry(rec_id)
                            .and_modify(|v| v.push(cur_off))
                            .or_insert(vec![cur_off]);
-                    let bytes_to_skip: u32 = rec_id_map.get(&rec_id).unwrap().0;  // skip this record's data field
+                    let bytes_to_skip: u32 = if !vlsd_rec_id.contains(&rec_id)  { 
+                        rec_id_map.get(&rec_id).unwrap().0  // skip this record's data field
+                    } else {   // handler vlsd records
+                        let mut four_bytes = [0u8; 4];
+                        data_block.read_virtual_buf(buf, cur_off, &mut four_bytes)?;
+                        let vlsd_len = u32::from_le_bytes(four_bytes);
+                        4 + vlsd_len
+                    };
                     cur_off += bytes_to_skip as u64;
                 }
             }
@@ -271,6 +282,17 @@ pub mod datagroup {
             let data_block: &Box<dyn VirtualBuf> = &self.data_block;
             let mut temp_buf = vec![0u8; self.rec_id_map.get(&rec_id)?.0 as usize];
             data_block.read_virtual_buf(file, virtual_offset, &mut temp_buf[..]).ok()?;
+            Some(temp_buf)
+        }
+
+        pub fn get_vlsd_cg_data(&self, rec_id: u64, index: u64, file: &mut BufReader<File>) -> Option<Vec<u8>> {
+            let virtual_offset = self.get_rec_id_offset(rec_id, index)?;
+            let data_block: &Box<dyn VirtualBuf> = &self.data_block;
+            let mut four_bytes: [u8; 4] = [0u8; 4];
+            data_block.read_virtual_buf(file, virtual_offset, &mut four_bytes[..]).ok()?;
+            let data_len = u32::from_le_bytes(four_bytes) as usize;
+            let mut temp_buf = vec![0u8; data_len];
+            data_block.read_virtual_buf(file, virtual_offset+4, &mut temp_buf[..]).ok()?;
             Some(temp_buf)
         }
 
