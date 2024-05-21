@@ -2,6 +2,7 @@ pub mod conversion {
     use std::fs::File;
     use std::io::BufReader;
     use crate::block::BlockInfo;
+    use crate::data_serde::DataValue;
     use crate::parser::{get_tx_data, get_clean_text, get_block_desc_by_name};
 
     #[derive(Debug, Clone, Default)]
@@ -190,7 +191,7 @@ pub mod conversion {
                     U::from(numerator / denominator)
                 },
                 CcType::TableInt((index, value)) => {
-                    let mut right_ind = 0;
+                    let mut right_ind: usize = 0;
                     while inp >= index[right_ind] && right_ind < index.len() {
                         right_ind += 1;
                     };
@@ -274,8 +275,67 @@ pub mod conversion {
                     }
             }
         }
+
+        pub fn convert_from_text(&self, buf: &mut BufReader<File>, inp: &Vec<String>) -> Result<DataValue, Box<dyn std::error::Error>> {
+            match &self.cc_type {
+                CcType::Text2Value((text, value)) => {
+                    let mut ref_text: Vec<String> = Vec::new();
+                    for t in text.iter() {
+                        let clean_text: String = get_clean_text(buf, *t)?;
+                        ref_text.push(clean_text);
+                    }
+                    let mut result: Vec<f64> = Vec::new();
+                    let default_value: f64 = value[value.len()-1];
+                    for inp_str in inp.iter() {
+                        let mut found = false;
+                        for (ref_t, t) in ref_text.iter().zip(value.iter()) {
+                            if ref_t == inp_str {
+                                result.push(*t);
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            result.push(default_value);
+                        }
+                    }
+                    Ok(DataValue::REAL(result))  // default value; last element in values
+                },
+                CcType::Text2Text(text) => {
+                    let total_num: usize = text.len();
+                    if total_num % 2 == 0 {
+                        Err("text2text cc block has odd number of elements".into())
+                    } else {
+                        let half_num = total_num / 2;
+                        let mut ref_text = Vec::new();
+                        let mut value_text = Vec::new();
+                        for i in 0..half_num {
+                            ref_text.push(get_clean_text(buf, text[i*2].to_owned())?);
+                            value_text.push(get_clean_text(buf, text[i*2+1].to_owned())?);
+                        }
+                        let default_value: String = get_clean_text(buf, text[total_num-1].to_owned())?;
+                        let mut result: Vec<String> = Vec::new();
+                        for inp_str in inp.iter() {
+                            let mut found = false;
+                            for (ref_t, t) in ref_text.iter().zip(value_text.iter()) {
+                                if ref_t == inp_str {
+                                    result.push(t.to_owned());
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if !found {
+                                result.push(default_value.clone());
+                            }
+                        }
+                        Ok(DataValue::STRINGS(result))  
+                    }
+                },
+                CcType::OneToOne => Ok(DataValue::STRINGS(inp.clone())),
+                other_type => {
+                    Err(format!("{:?} does not support from text conversions", other_type).into())
+                },
+            }
+        }
     }
-
-    
 }
-

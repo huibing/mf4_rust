@@ -338,7 +338,15 @@ pub mod channel {
                     Ok(DataValue::STRINGS(float_data.into_iter().map(|f| self.get_conversion().convert_to_text(file, f).unwrap()).collect()))  // todo: remove unwrap handle errors
                 }
             } else if data_raw.is_strings(){
-                Ok(data_raw)   // place holders
+                let mut strings: Vec<String> = data_raw.try_into()?;
+                let input_strings: Vec<String> = strings.iter_mut()
+                                                  .map(|s| s.trim_end_matches("\0").to_string())
+                                                  .collect();  // remove trailing '\0'
+                if let Ok(res) = self.get_conversion().convert_from_text(file, &input_strings) {
+                    Ok(res)
+                } else {
+                    Ok(DataValue::STRINGS(input_strings))
+                }
             } else {
                 Ok(data_raw)
             }
@@ -381,9 +389,10 @@ pub mod channel {
         }
 
         fn parse_sd_data(&self, file: &mut BufReader<File>, offsets: &Vec<u64>) -> Result<DataValue, DynError> {
-            /* for non-cg vlsd channel ; only support string type for now*/
+            /* for non-cg vlsd channel ; only support string and raw bytes for now*/
             let data_blocks: Box<dyn VirtualBuf> = read_data_block(file, self.cn_data)?;
             let mut sd_data: Vec<String> = Vec::new();  // todo: is there any other possible data types?
+            let mut raw = Vec::new();
             for offset in offsets.iter() {
                 let mut four_bytes: [u8; 4] = [0u8; 4];
                 data_blocks.read_virtual_buf(file, *offset, &mut four_bytes)?;
@@ -405,19 +414,27 @@ pub mod channel {
                         let u16str: UTF16String = UTF16String::from_be_bytes(&mut data);
                         sd_data.push(u16str.inner.trim_end_matches('\0').to_string());
                     },
+                    10 => {
+                        raw.push(data_bytes);
+                    }
                     num => {
                         return Err(format!("Can not parse sd data with this type {}", num).into())
                     }
                 }
             }
-            Ok(DataValue::STRINGS(sd_data))
+            if self.get_data_type() == 10 {
+                Ok(DataValue::BYTEARRAY(raw))
+            } else {
+                Ok(DataValue::STRINGS(sd_data))
+            }
         }
 
         fn parse_cg_vlsd(&self, file: &mut BufReader<File>, offsets: &Vec<u64>, id: u64, dg: &DataGroup) -> Result<DataValue, DynError>{
-            /* for cg vlsd channel ; only support string type for now*/
+            /* for cg vlsd channel ; only support string and raw bytes for now*/
             let mut res: Vec<String> = Vec::new();
+            let mut byte_array: Vec<Vec<u8>> = Vec::new();
             for i in 0..offsets.len() { // should be replaced by cg.cycle_count? 
-                let rec_data = dg.get_vlsd_cg_data(id, i as u64, file).ok_or("error during reading vlsd records")?;
+                let rec_data: Vec<u8> = dg.get_vlsd_cg_data(id, i as u64, file).ok_or("error during reading vlsd records")?;
                 match self.get_data_type() {
                     6 | 7 => {
                         let raw: String = String::from_utf8(rec_data)?;
@@ -433,12 +450,19 @@ pub mod channel {
                         let u16str: UTF16String = UTF16String::from_be_bytes(&mut data);
                         res.push(u16str.inner.trim_end_matches('\0').to_string());
                     },
+                    10 => {
+                        byte_array.push(rec_data);
+                    }
                     num => {
                         return Err(format!("Can not parse sd data with this type {}", num).into())
                     }
                 }
             }
-            Ok(DataValue::STRINGS(res))
+            if self.get_data_type() == 10 {
+                Ok(DataValue::BYTEARRAY(byte_array))
+            } else {
+                Ok(DataValue::STRINGS(res))
+            }
         }
 
         pub fn set_name(&mut self, name: String) {
