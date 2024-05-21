@@ -215,8 +215,8 @@ pub mod components_test {
 
     #[rstest]
     fn test_dz_blocks() {
-        let mut buf = BufReader::new(File::open("./test/Vector_SingleDZ_Deflate.mf4").unwrap());
-        let dz = DZBlock::new(&mut buf, 0x768).unwrap();
+        let mut buf = BufReader::new(File::open("./test/12.mf4").unwrap());
+        let dz = DZBlock::new(&mut buf, 0x23110).unwrap();
         println!("{:?}", dz.get_data_len());
     }
 
