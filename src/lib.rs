@@ -1,6 +1,12 @@
 pub mod components;
 pub mod data_serde;
 
+
+pub use crate::parser::Mf4Wrapper;
+pub use crate::data_serde::DataValue;
+pub use crate::components::dg::datagroup::ChannelLink;
+
+
 pub mod block {  // utility struct and functions for parsing mdf block link and data
     use serde::{Deserialize, Serialize};
     use toml::Value;
@@ -738,12 +744,19 @@ pub mod parser {
             let cn = cg.nth_cn(*cn_index)?;
             Some(ChannelLink(cn, cg, dg))
         }
+
         pub fn get_channel_data(&self, channel_name: &str) -> Option<DataValue>{
             if let Some(ChannelLink(cn, cg, dg)) = self.get_channel_link(channel_name) {
                 Some(cn.get_data(&mut *self.buf.borrow_mut(), dg, cg).ok()?)
             } else {
                 None
             }
+        }
+
+        pub fn get_channel_raw_data(&self, channel_name: &str) -> Option<DataValue> {
+            if let Some(ChannelLink(cn, cg, dg)) = self.get_channel_link(channel_name) {
+                Some(cn.get_data_raw(&mut *self.buf.borrow_mut(), dg, cg).ok()?)
+            } else { None }
         }
 
         pub fn get_channel_master_data(&mut self, channel_name: &str) -> Option<&DataValue> {

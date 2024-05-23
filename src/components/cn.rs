@@ -332,10 +332,10 @@ pub mod channel {
             }
             if data_raw.is_num() {
                 let float_data: Vec<f64> = data_raw.try_into()?;
-                if self.get_conversion().get_cc_type().is_num() {
-                    Ok(DataValue::REAL(float_data.into_iter().map(|f| self.get_conversion().transform_value(f)).collect()))
+                if self.get_conversion().get_cc_type().is_num() { // conversion target type is numerical
+                    Ok(DataValue::REAL(float_data.into_iter().map(|f| self.get_conversion().convert_num_value(f)).collect()))
                 } else {
-                    Ok(DataValue::STRINGS(float_data.into_iter().map(|f| self.get_conversion().convert_to_text(file, f).unwrap()).collect()))  // todo: remove unwrap handle errors
+                    Ok(DataValue::MIXED(float_data.into_iter().map(|f| self.get_conversion().convert_to_mix(file, f).unwrap()).collect()))  // todo: remove unwrap handle errors
                 }
             } else if data_raw.is_strings(){
                 let mut strings: Vec<String> = data_raw.try_into()?;

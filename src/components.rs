@@ -90,7 +90,7 @@ pub mod components_test {
         let raw = cl.get_channel().get_data_raw(&mut buf, cl.get_data_group(), cl.get_channel_group()).unwrap();
         assert_eq!(value, raw);
         let value_conv = if let DataValue::UINT8(val) = value {
-            val.iter().map(|x| cl.get_channel().get_conversion().transform_value(*x)).collect::<Vec<f64>>()
+            val.iter().map(|x| cl.get_channel().get_conversion().convert_num_value(*x)).collect::<Vec<f64>>()
         } else {
             vec![]
         };
@@ -120,7 +120,7 @@ pub mod components_test {
         assert_eq!(cc.get_unit(), "");
         assert_eq!(cc.get_comment(), "");
         assert!(!cc.is_inverse());
-        assert_eq!(cc.transform_value::<f64, f64>(1000.0), 2000.0);   // linear with p2 = 2
+        assert_eq!(cc.convert_num_value::<f64, f64>(1000.0), 2000.0);   // linear with p2 = 2
     }
 
     #[rstest]
@@ -133,7 +133,7 @@ pub mod components_test {
         assert_eq!(cc.get_unit(), "");
         assert_eq!(cc.get_comment(), "");
         assert!(!cc.is_inverse());
-        assert_eq!(cc.transform_value::<f64, f64>(1000.0), 1000.0);   // linear with p2 = 1
+        assert_eq!(cc.convert_num_value::<f64, f64>(1000.0), 1000.0);   // linear with p2 = 1
     }
 
     #[rstest]
@@ -146,12 +146,13 @@ pub mod components_test {
         assert_eq!(cc.get_unit(), "hundredfive");
         assert_eq!(cc.get_comment(), "");
         assert!(!cc.is_inverse());
-        assert_eq!(cc.convert_to_text::<f64>(&mut buf, 0.5).unwrap(), "Zero_to_one".to_string());
-        assert_eq!(cc.convert_to_text(&mut buf, 1u8).unwrap(), "Zero_to_one".to_string());
-        assert_eq!(cc.convert_to_text(&mut buf, 2.5).unwrap(), "two_to_three".to_string());
-        assert_eq!(cc.convert_to_text(&mut buf, 105).unwrap(), "hundredfive".to_string());
-        assert_eq!(cc.convert_to_text(&mut buf, 105.1).unwrap(), "".to_string());
-        assert_eq!(cc.convert_to_text(&mut buf, 15.1).unwrap(), "fourteen_to_seventeen".to_string());
+        
+        assert_eq!(cc.convert_to_mix::<f64>(&mut buf, 0.5).unwrap().into_string().unwrap(), "Zero_to_one".to_string());
+        assert_eq!(cc.convert_to_mix(&mut buf, 1u8).unwrap().into_string().unwrap(), "Zero_to_one".to_string());
+        assert_eq!(cc.convert_to_mix(&mut buf, 2.5).unwrap().into_string().unwrap(), "two_to_three".to_string());
+        assert_eq!(cc.convert_to_mix(&mut buf, 105).unwrap().into_string().unwrap(), "hundredfive".to_string());
+        assert_eq!(cc.convert_to_mix(&mut buf, 105.1).unwrap().into_string().unwrap(), "".to_string());
+        assert_eq!(cc.convert_to_mix(&mut buf, 15.1).unwrap().into_string().unwrap(), "fourteen_to_seventeen".to_string());
     }
 
     #[rstest]
@@ -164,10 +165,12 @@ pub mod components_test {
         assert_eq!(cc.get_unit(), "unknown signal type");
         assert_eq!(cc.get_comment(), "");
         assert!(!cc.is_inverse());
-        assert_eq!(cc.convert_to_text(&mut buf, 15.1).unwrap(), "unknown signal type".to_string());   // linear with p2 = 1
-        assert_eq!(cc.convert_to_text(&mut buf, 3).unwrap(), "Sinus".to_string());   // linear with p2 = 1
-        assert_eq!(cc.convert_to_text(&mut buf, 2).unwrap(), "Square".to_string());   // linear with p2 = 1
-        assert_eq!(cc.convert_to_text(&mut buf, 1).unwrap(), "SawTooth".to_string());   // linear with p2 = 1
+        
+        assert_eq!(cc.convert_to_mix(&mut buf, 15.1).unwrap().into_string().unwrap(), "unknown signal type".to_string());   // linear with p2 = 1
+        assert_eq!(cc.convert_to_mix(&mut buf, 3).unwrap().into_string().unwrap(), "Sinus".to_string());   // linear with p2 = 1
+        assert_eq!(cc.convert_to_mix(&mut buf, 2).unwrap().into_string().unwrap(), "Square".to_string());   // linear with p2 = 1
+        assert_eq!(cc.convert_to_mix(&mut buf, 1).unwrap().into_string().unwrap(), "SawTooth".to_string());   // linear with p2 = 1
+        
     }
 
     #[rstest]

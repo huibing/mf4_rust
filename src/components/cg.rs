@@ -1,7 +1,6 @@
 pub mod channelgroup {
     use std::io::BufReader;
     use std::fs::File;
-    use std::time::{Instant, Duration};
     use crate::block::{BlockInfo, BlockDesc};
     use crate::parser::{get_clean_text, get_block_desc_by_name, get_child_links};
     use crate::components::si::sourceinfo::SourceInfo;
@@ -23,8 +22,6 @@ pub mod channelgroup {
         is_vlsd: bool,
         total_bytes: u64,   // for VLSD cg
     }
-
-    pub static mut CN_TIME: Duration = Duration::new(0, 0);
 
     impl ChannelGroup {
         
@@ -60,7 +57,6 @@ pub mod channelgroup {
             } else {
                 let cn_link_list: Vec<u64> = get_child_links(buf, info.get_link_offset_normal("cg_cn_first").unwrap(), "CN").unwrap();
                 cn_link_list.into_iter().for_each(|cn_link| {
-                let started = Instant::now();
                 if let Ok(mut cn) = Channel::new(buf, cn_link) {
                     Self::new_channel_name(&mut cn, &acq_name);
                     if cn.is_master() {
@@ -78,10 +74,6 @@ pub mod channelgroup {
                     }
                 } else {
                     println!("Error reading channel at {}", cn_link);
-                }
-                let elapsed = Instant::now().duration_since(started);
-                unsafe {
-                    CN_TIME += elapsed;
                 }
                 });
             }

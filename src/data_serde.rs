@@ -332,6 +332,22 @@ fn from_u8_vec(bytes: &Vec<u8>) -> Result<Vec<u16>, &'static str> {
     Ok(result)
 }
 #[derive(Debug, PartialEq, Clone)]
+pub enum StringOrReal {  // for Value2Text and ValueRange2Text conversions only
+    String(String),
+    Real(f64),
+}
+
+impl StringOrReal {
+    pub fn into_string(self) -> Result<String, &'static str> {
+        match self {
+            StringOrReal::String(s) => Ok(s),
+            StringOrReal::Real(_) => Err("Can not convert real to string")
+        }
+    }
+}
+
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum DataValue {
     CHAR(String),
     STRINGS(Vec<String>),
@@ -347,9 +363,12 @@ pub enum DataValue {
     REAL(Vec<f64>),
     SINGLE(Vec<f32>),
     FLOAT16(Vec<f16>),
-    STRUCT(IndexMap<String, DataValue>),
+    STRUCT(IndexMap<String, DataValue>),   
     BYTEARRAY(Vec<Vec<u8>>),
+    MIXED(Vec<StringOrReal>)
 }
+
+
 
 impl DataValue {
     pub fn is_num(&self) -> bool {

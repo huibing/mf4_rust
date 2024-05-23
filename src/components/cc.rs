@@ -2,8 +2,9 @@ pub mod conversion {
     use std::fs::File;
     use std::io::BufReader;
     use crate::block::BlockInfo;
-    use crate::data_serde::DataValue;
-    use crate::parser::{get_tx_data, get_clean_text, get_block_desc_by_name};
+    use crate::data_serde::{DataValue, StringOrReal};
+    use crate::parser::{get_clean_text, get_block_desc_by_name, peek_block_type};
+    use evalexpr::*;
 
     #[derive(Debug, Clone, Default)]
     pub struct Conversion 
@@ -25,12 +26,18 @@ pub mod conversion {
         TableInt((Vec<f64>, Vec<f64>)),  // table with interpolation
         Table((Vec<f64>, Vec<f64>)), // table without interpolation
         ValueRange(Vec<f64>),
-        ValueText((Vec<f64>, Vec<u64>)),   //first from cc_val, second from cc_ref
-        ValueRangeText((Vec<f64>, Vec<u64>)), 
+        Value2Text((Vec<f64>, Vec<TextOrScale>)),   //first from cc_val, second from cc_ref
+        ValueRange2Text((Vec<f64>, Vec<TextOrScale>)), 
         Text2Value((Vec<u64>, Vec<f64>)),
         Text2Text(Vec<u64>),
         BitfieldText((Vec<u64>, Vec<u64>)),
         NotImplemented   // and error condition
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum TextOrScale {   // only for Value2Text and ValueRange2Text
+        Text(String),
+        Scale(Conversion)
     }
 
     impl CcType {
@@ -44,6 +51,7 @@ pub mod conversion {
                 CcType::Table(_) => true,
                 CcType::ValueRange(_) => true,
                 CcType::Text2Value(_) => true,
+                CcType::Algebraic(_) => true,
                 _ => false
             }
         }
@@ -62,7 +70,7 @@ pub mod conversion {
             }
             let cc_desc = get_block_desc_by_name("CC".to_string()).unwrap();
             let block_info: BlockInfo = cc_desc.try_parse_buf(buf, offset).unwrap();
-            let name: String = get_tx_data(buf, block_info.get_link_offset_normal("cc_tx_name").unwrap())
+            let name: String = get_clean_text(buf, block_info.get_link_offset_normal("cc_tx_name").unwrap())
                                 .unwrap_or("".to_string());
             let unit: String = get_clean_text(buf, block_info.get_link_offset_normal("cc_md_unit").unwrap())
                                 .unwrap_or("".to_string());
@@ -89,7 +97,10 @@ pub mod conversion {
                     cc_type = CcType::Rational([to_f64(cc_val[0]), to_f64(cc_val[1]), to_f64(cc_val[2]),
                                         to_f64(cc_val[3]), to_f64(cc_val[4]), to_f64(cc_val[5])]);
                 },
-                
+                3 if cc_ref_count == 1 && cc_ref.len() == 1 => { // text2value
+                    let text = get_clean_text(buf, cc_ref[0])?;
+                    cc_type = CcType::Algebraic(text); 
+                },
                 4|5 if cc_val.len() == (cc_val_count) as usize && cc_val.len() % 2 == 0 => { // table
                     let mut key: Vec<f64> = Vec::new();
                     let mut value: Vec<f64> = Vec::new();
@@ -107,9 +118,21 @@ pub mod conversion {
                     let value: Vec<f64> = cc_val.into_iter().map(|v| to_f64(v)).collect();  // consumed cc_val
                     cc_type = CcType::ValueRange(value);
                 },
-                7 if cc_val.len() == cc_val_count as usize && cc_ref.len() == cc_ref_count as usize && cc_ref_count == cc_val_count + 1 => { // ValueText
-                    let key = cc_val.into_iter().map(|v| to_f64(v)).collect();
-                    cc_type = CcType::ValueText((key, cc_ref)); // key value; value stored in tx block which cc_ref points at
+                7 if cc_val.len() == cc_val_count as usize && cc_ref.len() == cc_ref_count as usize && cc_ref_count == cc_val_count + 1 => { // Value2Text
+                    let key: Vec<f64> = cc_val.into_iter().map(|v| to_f64(v)).collect();
+                    let mut text: Vec<TextOrScale> = Vec::new();
+                    for link in cc_ref.into_iter() {
+                        let block_type = peek_block_type(buf, link).unwrap_or("TX".to_string());  // handle Nil
+                        match block_type.as_str() {
+                            "TX" => text.push(TextOrScale::Text(get_clean_text(buf, link).unwrap_or("".to_string()))),
+                            "CC" => {
+                                let conversion = Conversion::new(buf, link).unwrap_or(Conversion::default());
+                                text.push(TextOrScale::Scale(conversion));
+                            }
+                            _ => return Ok(Conversion::default())   // error handling: no panic no err, just fall back to default
+                        }
+                    }
+                    cc_type = CcType::Value2Text((key, text)); // key value; value stored in tx block which cc_ref points at
                 },
 
                 8 if cc_val.len() == (cc_val_count) as usize && cc_ref.len() == (cc_val_count/2+1) as usize => { // value range with text
@@ -119,7 +142,19 @@ pub mod conversion {
                         value.push(to_f64(cc_val[i as usize*2 + 1]));  //max
                              //corresponding text
                     });
-                    cc_type = CcType::ValueRangeText((value, cc_ref));  // cc_ref moved here
+                    let mut text: Vec<TextOrScale> = Vec::new();   // same as Value2Text
+                    for link in cc_ref.into_iter() {
+                        let block_type = peek_block_type(buf, link).unwrap_or("TX".to_string());  // handle error later
+                        match block_type.as_str() {
+                            "TX" => text.push(TextOrScale::Text(get_clean_text(buf, link).unwrap_or("".to_string()))),
+                            "CC" => {
+                                let conversion = Conversion::new(buf, link).unwrap_or(Conversion::default());
+                                text.push(TextOrScale::Scale(conversion));
+                            }
+                            _ => return Ok(Conversion::default())   // error handling: no panic no err, just fall back to default
+                        }
+                    }
+                    cc_type = CcType::ValueRange2Text((value, text));  // cc_ref moved here
                 },
 
                 9 if cc_val.len() == (cc_ref_count+1) as usize && cc_ref.len() == (cc_ref_count) as usize => { // text to value
@@ -141,7 +176,7 @@ pub mod conversion {
                     cc_type = CcType::BitfieldText((cc_val, cc_ref));
                 }
                 _ => {
-                    println!("cc block {} has not support cc_type", name);
+                    println!("cc block {} has not support cc_type type {}", name, cc_type_raw);
                 }
             }
                 
@@ -175,7 +210,7 @@ pub mod conversion {
             &self.cc_type
         }
 
-        pub fn transform_value<T, U>(&self, int: T) -> U 
+        pub fn convert_num_value<T, U>(&self, int: T) -> U 
         where T: Into<f64>, U: From<f64>{  // intermediate calculation use f64
             let inp: f64 = int.into();
             match &self.cc_type {
@@ -234,45 +269,66 @@ pub mod conversion {
                         U::from(value[left_ind-1])
                     }
                 },
+                CcType::Algebraic(text) => {
+                    let context = context_map! {"X" => inp}.unwrap();
+                    let value = eval_float_with_context(&text, &context).unwrap();
+                    U::from(value)
+                }
                 _ => {
                     panic!("cc block {} has not support cc_type", self.name);
                 }
             }
         }
 
-        pub fn convert_to_text<T>(&self, buf: &mut BufReader<File>,int: T) -> Result<String, Box<dyn std::error::Error>> 
+        pub fn convert_to_mix<T>(&self, buf: &mut BufReader<File>,int: T) -> Result<StringOrReal, Box<dyn std::error::Error>> 
         where T: Into<f64> {
             let inp: f64 = int.into();
             match &self.cc_type {
-                CcType::ValueRangeText((value, ref_text)) => {
-                    let mut left_ind = 0;
-                    let default_value: String = get_clean_text(buf, ref_text[ref_text.len()-1])
-                                                .unwrap_or("".to_string());
+                CcType::ValueRange2Text((value, ref_text)) => {
+                    let mut left_ind: usize = 0;
                     while left_ind < value.len() && inp >= value[left_ind] {
-                        if inp <= *value.get(left_ind+1).unwrap_or(&f64::MIN) {
-                            return Ok(get_clean_text(buf, ref_text[left_ind/2]).unwrap_or(default_value));
+                        if inp <= *value.get(left_ind+1).unwrap_or(&f64::MIN) { // found a match
+                            let item: TextOrScale = ref_text[left_ind/2].clone();
+                            return Self::to_mix(&item, inp, buf)
                         } else {
                             left_ind += 2;
                         }
                     }
-                    Ok(default_value)
+                    let default: TextOrScale = ref_text[ref_text.len()-1].clone();
+                    Self::to_mix(&default, inp, buf)          
                 },
-                CcType::ValueText((value, ref_text)) => {
+                CcType::Value2Text((value, ref_text)) => {
                     let mut left_ind:usize = 0;
-                    let default_value: String = get_clean_text(buf, ref_text[ref_text.len()-1])
-                                                .unwrap_or("".to_string());
+                    let default_value: TextOrScale= ref_text[ref_text.len() - 1].clone();
                     while left_ind < value.len() && inp != value[left_ind] {
                         left_ind += 1;
                     }
-                    if left_ind < value.len() {
-                        Ok(get_clean_text(buf, ref_text[left_ind]).unwrap_or(default_value))
-                    } else {
-                        Ok(default_value)
+                    if left_ind < value.len() { // found a match
+                        let item: TextOrScale = ref_text[left_ind].clone();
+                        Self::to_mix(&item, inp, buf)
+                    } else {  // fall back to default
+                        Self::to_mix(&default_value, inp, buf)
                     }
                 },
                 _ => {
                         panic!("cc block {} has not support cc_type", self.name);
                     }
+            }
+        }
+
+        fn to_mix<T>(conv: &TextOrScale, inp: T, buf: &mut BufReader<File>) -> Result<StringOrReal,  Box<dyn std::error::Error>> 
+        where T: Into<f64>{
+            match conv {
+                TextOrScale::Text(text) => Ok(StringOrReal::String(text.clone())),
+                TextOrScale::Scale(conv) => {
+                    if conv.cc_type.is_num() {
+                        let num: f64 = conv.convert_num_value(inp);
+                        Ok(StringOrReal::Real(num))
+                    } else {
+                        let mix: Result<StringOrReal, Box<dyn std::error::Error>> = conv.convert_to_mix(buf, inp);
+                        mix   //  for debug purpose
+                    }
+                },
             }
         }
 
