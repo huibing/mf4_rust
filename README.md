@@ -19,6 +19,7 @@ Also you can access some of the demo mf4 files from <a href="https://www.asam.ne
 
 - Invalid bit flag processing 
 - Bitfield text table conversion
+- Inverse conversion
 - CG and DG-template CA block
 - Sample reduction block
 - Compression method: Transposition + Deflate
@@ -49,6 +50,7 @@ Alternatively, you can specify this repo as a git dependency:
 
 
 ## Examples
+Here is a simple example without proper error handling.
 
 ```rust
 use mf4_parse::Mf4Wrapper;
@@ -60,7 +62,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (index, ch_name) in mf4.get_channel_names().iter().enumerate() {
         println!("{}th channel name: {:?}", index, ch_name);
     }
-    println!("Channel1 data: {:?}", mf4.get_channel_data("Channel1"));
+    println!("Channel1 data: {:?}", mf4.get_channel_data("Channel1").unwrap());
+    println!("channel1's time stamp data: {:?}", mf4.get_channel_master_data("Channel1").unwrap());
     Ok(())
 }
 ```
