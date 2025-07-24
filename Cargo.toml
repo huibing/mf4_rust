@@ -5,6 +5,17 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+
+[lib]
+name = "mf4_parse"
+crate-type = ["lib", "cdylib"]
+path = "src/lib.rs"
+
+
+[[bin]]
+name = "mf4_parse_cli"
+path = "src/main.rs"
+
 [dependencies]
 serde = { version = "1.0.197", features = ["derive"] }
 toml = { version = "0.8.12" ,  features =  ["preserve_order"] }
@@ -17,5 +28,13 @@ chrono = "0.4.35"
 rstest = "0.18.2"
 half = "2.4.1"
 lru = "0.12.3"
-flate2 = { version = "1.0.17", features = ["zlib"], default-features = false }
+flate2 = { version = "1.0.17", features = ["rust_backend"], default-features = false }
 evalexpr = "11.3.0"
+plotly = "0.8.4"
+wasm-bindgen = "0.2.100"
+imp = "0.1.0"
+serde-wasm-bindgen = "0.4"
+
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

@@ -6,6 +6,25 @@ pub use crate::parser::Mf4Wrapper;
 pub use crate::data_serde::DataValue;
 pub use crate::components::dg::datagroup::ChannelLink;
 
+use wasm_bindgen::prelude::*;
+use serde_wasm_bindgen::to_value;
+
+#[wasm_bindgen]
+pub fn greet(name: &str) -> String {
+    format!("Hello, {}!", name)
+}
+
+#[wasm_bindgen]
+pub fn get_mf4_channels(mf4_path: &str) -> Result<JsValue, JsValue> {
+    let path = std::path::PathBuf::from(mf4_path);
+    let mf4 = Mf4Wrapper::new(path);
+    if let Ok(mf4) = mf4 {
+        let channel_names = mf4.get_channel_names();
+        Ok(to_value(&channel_names)?)
+    } else {
+        Err(JsValue::from_str("Error opening file"))
+    }
+}
 
 pub mod block {  // utility struct and functions for parsing mdf block link and data
     use serde::{Deserialize, Serialize};

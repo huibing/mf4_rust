@@ -3,6 +3,7 @@ use mf4_parse::ChannelLink;
 use mf4_parse::DataValue;
 use std::path::PathBuf;
 use std::time::{Instant, Duration};
+use plotly::{Plot, Scatter};
 
 
 
@@ -30,20 +31,38 @@ fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Instant::now();
-    let new: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/Vector_PartialConversionValueRange2TextRational.mf4"))?;
+    let mut new: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/halffloat_sinus.mf4"))?;
     let duration: Duration = Instant::now() - start_time;
     println!("load mf4 file time: {:?}", duration.as_secs_f64());
     println!("channel names: {:?}", new.get_channel_names());
-    display_channel_info("Data channel", &new);
-    let data = new.get_channel_data("Data channel").unwrap();
-    let raw: Vec<f64> = new.get_channel_raw_data("Data channel").unwrap().try_into()?;
-    if let DataValue::MIXED(d) = data {
-        d.iter().zip(raw.iter()).for_each(|(a, b)| {
-            println!("{:?} {:?}", a, b);
-        });
+    display_channel_info("HalfFloat", &new);
+    let data = new.get_channel_data("HalfFloat").unwrap();
+    let raw = new.get_channel_master_data("HalfFloat").unwrap();
+    
+    
+
+    /* plotters */
+    let mut plot = Plot::new();
+    if let DataValue::REAL(data) = data {
+        if let DataValue::REAL(t) = raw {
+            let trace = Scatter::new(t.to_vec(), data).name("HalfFloat");
+            plot.add_trace(trace);
+        }
     }
+
+    let data1 = new.get_channel_data("Float").unwrap();
+    let raw1 = new.get_channel_master_data("Float").unwrap();
+    if let DataValue::REAL(data) = data1 {
+        if let DataValue::REAL(t) = raw1 {
+            let trace = Scatter::new(t.to_vec(), data).name("Float");
+            plot.add_trace(trace);
+        }
+    }
+
+    plot.write_html("out.html");
     Ok(())
 }
+
 
 #[cfg(test)]
 pub mod test {
