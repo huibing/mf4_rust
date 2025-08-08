@@ -31,7 +31,7 @@ fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Instant::now();
-    let mut new: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/halffloat_sinus.mf4"))?;
+    let mut new: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/halffloat_sinus.mf4"), None)?;
     let duration: Duration = Instant::now() - start_time;
     println!("load mf4 file time: {:?}", duration.as_secs_f64());
     println!("channel names: {:?}", new.get_channel_names());
@@ -70,17 +70,31 @@ pub mod test {
     use mf4_parse::parser::Mf4Wrapper;
     use std::path::PathBuf;
     use super::display_channel_info;
+    use std::time::Instant;
 
     #[rstest]
     fn mf4_wrapper_test() {
-        let mf4: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/demo.mf4")).unwrap();
+        let mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/demo.mf4"), None).unwrap();
         let channel_names: Vec<String> = mf4.get_channel_names();
         println!("{:?}", channel_names);
         display_channel_info("Nested_structures", &mf4);
         display_channel_info("Channel_lookup_with_default_axis", &mf4);
-        let new: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from("test/string_and_array.mf4")).unwrap();
+        let new: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/string_and_array.mf4"), None).unwrap();
         display_channel_info("Channel_lookup_with_default_axis[0][0][2]", &new);
         let d: mf4_parse::data_serde::DataValue = new.get_channel_data("Channel_lookup_with_default_axis[0][0][2]").unwrap();
         println!("{:?}\n value ends\n", d);
+    }
+
+    #[rstest]
+    fn mf4_wrapper_test2() {
+        let mut mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from(r"D:\ETASData\INCA7.2\Measure\jingtai 17-07-2025 03_40_33 PM.mf4"), None).unwrap();
+        let start = Instant::now();
+        let channel_name = "IVE_BdyVZRear";
+        let _ = mf4.get_channel_data(channel_name).unwrap();
+        //println!("{:?}", channel_data);
+        println!("1 Time elapsed: {:?} channel data", start.elapsed());
+        let _ = mf4.get_channel_master_data(channel_name).unwrap();
+        //println!("{:?}", master);
+        println!("2 Time elapsed: {:?} master data", start.elapsed());
     }
 }

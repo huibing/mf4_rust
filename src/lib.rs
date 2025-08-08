@@ -17,7 +17,7 @@ pub fn greet(name: &str) -> String {
 #[wasm_bindgen]
 pub fn get_mf4_channels(mf4_path: &str) -> Result<JsValue, JsValue> {
     let path = std::path::PathBuf::from(mf4_path);
-    let mf4 = Mf4Wrapper::new(path);
+    let mf4 = Mf4Wrapper::new::<fn(f64)>(path, None);
     if let Ok(mf4) = mf4 {
         let channel_names = mf4.get_channel_names();
         Ok(to_value(&channel_names)?)
@@ -642,13 +642,13 @@ pub mod parser {
         }
     }
     
-    pub struct Mdf {
+    pub struct Mdf where {
         pub mdfinfo: MdfInfo,
         pub data: Vec<DataGroup>
     }
 
     impl Mdf {
-        pub fn new(file: &mut BufReader<File>) -> Result<Self, DynError> {
+        pub fn new<T>(file: &mut BufReader<File>, app: Option<&T>) -> Result<Self, DynError>  where T: Fn(f64) + 'static {
             let mdfinfo = MdfInfo::new(file)?;
             let mut data = Vec::new();
             let dg_links = get_child_links(file, mdfinfo.first_dg_offset, "DG")?;
@@ -668,12 +668,15 @@ pub mod parser {
                 while let Ok(dg) = rx.recv() {
                     data.push(dg);
                     dg_count += 1;
-                    println!("total process: {}", dg_count as f64/total_len as f64 * 100.0);
+                    let progress = dg_count as f64/total_len as f64 * 100.0;
+                    if app.is_some() {
+                        app.unwrap()(progress);
+                    } else {
+                        println!("total process: {}", progress);
+                    }
+                    
                 }
             });
-            
-
-            
             Ok(Self{
                 mdfinfo,
                 data,
@@ -733,9 +736,9 @@ pub mod parser {
         
 
     impl Mf4Wrapper {
-        pub fn new(file: PathBuf) -> Result<Self, DynError> {
+        pub fn new<T>(file: PathBuf, app: Option<&T>) -> Result<Self, DynError>  where T: Fn(f64) + 'static {
             let buf: RefCell<BufReader<File>> = RefCell::new(BufReader::new(File::open(file)?));
-            let mdf: Mdf = Mdf::new(&mut buf.borrow_mut())?;
+            let mdf: Mdf = Mdf::new(&mut buf.borrow_mut(), app)?;
             let mut channel_cache: HashMap<String, (usize, usize, usize)> = HashMap::new();
             for (dg_index, dg) in mdf.data.iter().enumerate() {
                 for (cg_index, cg) in dg.get_channle_groups().iter().enumerate() {
@@ -787,9 +790,7 @@ pub mod parser {
                 let cg: &ChannelGroup = dg.nth_cg(*cg_index)?;
                 let cn: &crate::components::cn::channel::Channel = cg.nth_cn(*cn_index)?;
                 let cl: ChannelLink<'_> = ChannelLink(cn, cg, dg);
-                
-                    self.master_cache.put((*dg_index, *cg_index), cl.get_master_channel_data(&mut *self.buf.borrow_mut()).ok()?);
-                
+                self.master_cache.put((*dg_index, *cg_index), cl.get_master_channel_data(&mut *self.buf.borrow_mut()).ok()?);
                 Some(self.master_cache.get(&(*dg_index, *cg_index)).unwrap())
             }
         }
@@ -957,8 +958,8 @@ pub mod parser_test {
     fn test_mdf_new() {
         let file = PathBuf::from("test/1.mf4");
         let mut buf = BufReader::new(std::fs::File::open(file).unwrap());
-        let mdf = Mdf::new(&mut buf).unwrap();
-        let wrapper = Mf4Wrapper::new(PathBuf::from("test/1.mf4")).unwrap();
+        let mdf = Mdf::new::<fn(f64)>(&mut buf, None).unwrap();
+        let wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/1.mf4"), None).unwrap();
         let channel_map = mdf.generate_channel_map();
         assert!(mdf.check_duplicate_channel().is_none());
         // print out channel group info
@@ -994,7 +995,7 @@ pub mod parser_test {
 
     #[test]
     fn test_mdf_wrapper_new() {
-        let mut wrapper = Mf4Wrapper::new(PathBuf::from("test/1.mf4")).unwrap();
+        let mut wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/1.mf4"), None).unwrap();
         println!("{:?}", wrapper.get_channel_names());
         let _ = wrapper.get_channel_data("$CalibrationLog").unwrap();
                                             //.unwrap_or(crate::data_serde::DataValue::CHAR("Error".to_string()));
