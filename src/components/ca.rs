@@ -1,6 +1,5 @@
 pub mod channelarray {
-    use std::io::{BufReader, Cursor, Read};
-    use std::fs::File;
+    use std::io::{Cursor, Read};
 
     use crate::parser::get_block_desc_by_name;
     use crate::data_serde::DataValue;
@@ -20,7 +19,7 @@ pub mod channelarray {
     }
 
     impl ChannelArray {
-        pub fn new(file: &mut BufReader<File>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn new(file: &mut Cursor<&[u8]>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
             let block_desc = get_block_desc_by_name("CA".to_string()).unwrap();
             let block_info = block_desc.try_parse_buf(file, offset)?;
             let ca_type = block_info.get_data_value_first("ca_type").ok_or("Failed to get ca_type")?;

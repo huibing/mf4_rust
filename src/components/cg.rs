@@ -1,6 +1,5 @@
 pub mod channelgroup {
-    use std::io::BufReader;
-    use std::fs::File;
+    use std::io::Cursor;
     use crate::block::{BlockInfo, BlockDesc};
     use crate::parser::{get_clean_text, get_block_desc_by_name, get_child_links};
     use crate::components::si::sourceinfo::SourceInfo;
@@ -25,7 +24,7 @@ pub mod channelgroup {
 
     impl ChannelGroup {
         
-        pub fn new(buf:&mut BufReader<File>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn new(buf:&mut Cursor<&[u8]>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
             let cg_desc: &'static BlockDesc = get_block_desc_by_name("CG".to_string()).unwrap();
             let info: BlockInfo = cg_desc.try_parse_buf(buf, offset).unwrap();
             let acq_name: String = get_clean_text(buf, info.get_link_offset_normal("cg_tx_acq_name").unwrap())

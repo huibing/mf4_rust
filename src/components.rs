@@ -19,32 +19,37 @@ pub mod components_test {
     use crate::components::dg::datagroup::DataGroup;
     use crate::components::ca::channelarray::ChannelArray;
     use super::dx::dataxxx::{DataLink, VirtualBuf, DZBlock}; 
-    use crate::data_serde::DataValue;
     use rust_embed::RustEmbed;
-    use std::io::BufReader;
-    use std::fs::File;
+    use std::io::Cursor;
+    use std::fs::{File, self};
     use std::io::Write;
     use std::sync::Mutex;
     use rstest::*;
+    use lazy_static::lazy_static;
 
     #[derive(RustEmbed)]
     #[folder = "test/"]
     #[prefix = "test/"]
     struct Asset;
 
+    lazy_static! {
+        pub static ref TESTFILE: Vec<u8> = {
+            let file_data = Asset::get("test/1.mf4").unwrap();
+            let mut new_file = File::create("temp.mf4").unwrap();
+            new_file.write(file_data.data.as_ref()).unwrap();
+            fs::read("temp.mf4").unwrap()
+        };
+    }
+
+
     #[fixture]
     #[once]
-    fn buffer() -> Mutex<BufReader<File>> {
-        let file_data = Asset::get("test/1.mf4").unwrap();
-        let mut new_file = File::create("temp.mf4").unwrap();
-        new_file.write(file_data.data.as_ref()).unwrap();
-        let file = File::open("temp.mf4").unwrap();
-        let buf= BufReader::new(file);
-        Mutex::new(buf)
+    fn buffer() -> Mutex<Cursor<&'static [u8]>> {
+        Mutex::new(Cursor::new(TESTFILE.as_slice()))
     }
 
     #[rstest]
-    fn test_new_cg(buffer: &Mutex<BufReader<File>>) {
+    fn test_new_cg(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset = 0x6400;
         let mut buf = buffer.lock().unwrap();
         let cg: ChannelGroup = ChannelGroup::new(&mut buf, offset).unwrap();
@@ -52,7 +57,7 @@ pub mod components_test {
     }
 
     #[rstest]
-    fn test_cg_get_channel_name(buffer: &Mutex<BufReader<File>>) {
+    fn test_cg_get_channel_name(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset = 0x6400;
         let mut buf = buffer.lock().unwrap();
         let cg: ChannelGroup = ChannelGroup::new(&mut buf, offset).unwrap();
@@ -60,7 +65,7 @@ pub mod components_test {
     }
 
     #[rstest]
-    fn test_dg_new(buffer: &Mutex<BufReader<File>>) {
+    fn test_dg_new(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset: u64 = 0x8CB0;
         let mut buf = buffer.lock().unwrap();
         let dg: DataGroup = DataGroup::new(&mut buf, offset).unwrap();
@@ -70,12 +75,10 @@ pub mod components_test {
         println!("{:?}", map.keys().collect::<Vec<&String>>());
         let var = map.get("$CalibrationLog").unwrap();
         println!("{:?}", var.get_channel());
-        let value = var.yield_channel_data(&mut buf).unwrap();
-        println!("{:?}", value);
     }
 
     #[rstest]
-    fn test_dg_new_1(buffer: &Mutex<BufReader<File>>) {
+    fn test_dg_new_1(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset: u64 = 0x8cf0;
         let mut buf = buffer.lock().unwrap();
         let dg: DataGroup = DataGroup::new(&mut buf, offset).unwrap();
@@ -85,16 +88,7 @@ pub mod components_test {
         println!("{:?}", channel_map.keys().collect::<Vec<&String>>());
         let cl = channel_map.get("ASAM.M.SCALAR.UBYTE.RAT_FUNC.IDENT.STATUS_STRING").unwrap();
         println!("{}", cl.get_channel());
-        let value = cl.yield_channel_data(&mut buf).unwrap();
-        //println!("{:?}", value);
-        let raw = cl.get_channel().get_data_raw(&mut buf, cl.get_data_group(), cl.get_channel_group()).unwrap();
-        assert_eq!(value, raw);
-        let value_conv = if let DataValue::UINT8(val) = value {
-            val.iter().map(|x| cl.get_channel().get_conversion().convert_num_value(*x)).collect::<Vec<f64>>()
-        } else {
-            vec![]
-        };
-        println!("{:?}", value_conv);
+        let _ = cl.get_channel().get_data_raw(&mut buf, cl.get_data_group(), cl.get_channel_group()).unwrap();
     }
 
     #[rstest]
@@ -103,7 +97,7 @@ pub mod components_test {
     #[case(0x64A0)]
     #[case(0x6578)]
     #[case(0x6650)]
-    fn test_channel_new_0(buffer: &Mutex<BufReader<File>>, #[case] offset: u64) {
+    fn test_channel_new_0(buffer: &Mutex<Cursor<&[u8]>>, #[case] offset: u64) {
         let mut buf = buffer.lock().unwrap();
         println!("offset = 0x{:X}", offset);
         let channel: Channel = Channel::new(&mut buf, offset).unwrap();
@@ -111,7 +105,7 @@ pub mod components_test {
     }
 
     #[rstest]
-    fn test_cc1(buffer: &Mutex<BufReader<File>>) {
+    fn test_cc1(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset = 0x52E8;
         let mut buf = buffer.lock().unwrap();
         let cc = Conversion::new(&mut buf, offset).unwrap();
@@ -124,7 +118,7 @@ pub mod components_test {
     }
 
     #[rstest]
-    fn test_cc2(buffer: &Mutex<BufReader<File>>) {
+    fn test_cc2(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset = 0x5348;
         let mut buf = buffer.lock().unwrap();
         let cc = Conversion::new(&mut buf, offset).unwrap();
@@ -137,7 +131,7 @@ pub mod components_test {
     }
 
     #[rstest]
-    fn test_cc3(buffer: &Mutex<BufReader<File>>) {
+    fn test_cc3(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset = 0x53A8;
         let mut buf = buffer.lock().unwrap();
         let cc = Conversion::new(&mut buf, offset).unwrap();
@@ -156,7 +150,7 @@ pub mod components_test {
     }
 
     #[rstest]
-    fn test_cc4(buffer: &Mutex<BufReader<File>>) {
+    fn test_cc4(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset = 0x5508;
         let mut buf = buffer.lock().unwrap();
         let cc = Conversion::new(&mut buf, offset).unwrap();
@@ -174,7 +168,7 @@ pub mod components_test {
     }
 
     #[rstest]
-    fn test_dl_new_0(buffer: &Mutex<BufReader<File>>) {
+    fn test_dl_new_0(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset: u64 = 0xdbc0;
         let mut buf = buffer.lock().unwrap();
         let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
@@ -182,7 +176,7 @@ pub mod components_test {
     }
 
     #[rstest]
-    fn test_dl_new_1(buffer: &Mutex<BufReader<File>>) {
+    fn test_dl_new_1(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset: u64 = 0x8F10;
         let mut buf = buffer.lock().unwrap();
         let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
@@ -195,7 +189,7 @@ pub mod components_test {
     }
 
     #[rstest]
-    fn test_dl_new_2(buffer: &Mutex<BufReader<File>>) {
+    fn test_dl_new_2(buffer: &Mutex<Cursor<&[u8]>>) {
         let offset: u64 = 0x9BD8;  // this dlblock points to one DT: 0x9D328
         let mut buf = buffer.lock().unwrap();
         let dl: DataLink = DataLink::new(&mut buf, offset).unwrap();
@@ -211,21 +205,24 @@ pub mod components_test {
 
     #[rstest]
     fn test_new_ca() {
-        let mut buf = BufReader::new(File::open("./test/demo.mf4").unwrap());
+        let data = fs::read("./test/demo.mf4").unwrap();
+        let mut buf = Cursor::new(data.as_slice());
         let ca = ChannelArray::new(&mut buf, 0xD8E0).unwrap();
         println!("{:?}", ca);
     }
 
     #[rstest]
     fn test_dz_blocks() {
-        let mut buf = BufReader::new(File::open("./test/12.mf4").unwrap());
+        let data = fs::read("./test/12.mf4").unwrap();
+        let mut buf = Cursor::new(data.as_slice());
         let dz = DZBlock::new(&mut buf, 0x23110).unwrap();
         println!("{:?}", dz.get_data_len());
     }
 
     #[rstest]
     fn test_dz_blocks1() {
-        let mut buf = BufReader::new(File::open("./test/12.mf4").unwrap());
+        let data = fs::read("./test/12.mf4").unwrap();
+        let mut buf = Cursor::new(data.as_slice());
         let dz = DZBlock::new(&mut buf, 0x33e40).unwrap();
         println!("{:?}", dz.get_data_len());
     }

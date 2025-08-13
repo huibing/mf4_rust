@@ -530,32 +530,32 @@ pub mod serde_tests {
 
     #[rstest]
     fn test_u8_from_le_bytes() {
-        let mut cursor = Cursor::new(vec![0x12u8]);
-        assert_eq!(0x12u8, parse_le_value(&mut cursor));
+        let mut cursor: Cursor<Vec<u8>> = Cursor::new(vec![0x12u8]);
+        assert_eq!(0x12u8, parse_le_value::<u8>(&mut cursor));
     }
 
     #[rstest]
     fn test_u16_from_le_bytes() {
-        let mut cursor = Cursor::new(vec![0x12u8, 0x34]);
-        assert_eq!(0x3412u16, parse_le_value(&mut cursor));
+        let mut cursor: Cursor<Vec<u8>> = Cursor::new(vec![0x12u8, 0x34]);
+        assert_eq!(0x3412u16, parse_le_value::<u16>(&mut cursor));
     }
 
     #[rstest]
     fn test_f32_from_le_bytes() {
-        let mut cursor = Cursor::new(vec![0x00u8, 0x00, 0x48, 0x41]);
-        assert_eq!(12.5f32, parse_le_value(&mut cursor));
+        let mut cursor: Cursor<Vec<u8>> = Cursor::new(vec![0x00u8, 0x00, 0x48, 0x41]);
+        assert_eq!(12.5f32, parse_le_value::<f32>(&mut cursor));
     }
 
     #[rstest]
     fn test_f32_from_be_bytes() {
-        let mut cursor = Cursor::new(vec![0x41u8, 0x48, 0x00, 0x00]);
-        assert_eq!(12.5f32, parse_be_value(&mut cursor));
+        let mut cursor: Cursor<Vec<u8>> = Cursor::new(vec![0x41u8, 0x48, 0x00, 0x00]);
+        assert_eq!(12.5f32, parse_be_value::<f32>(&mut cursor));
     }
 
     #[rstest]
     fn test_f64_from_be_bytes() {
         let mut cursor = Cursor::new(vec![0x41u8, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        assert_eq!(3145728.0f64, parse_be_value(&mut cursor));
+        assert_eq!(3145728.0f64, parse_be_value::<f64>(&mut cursor));
     }
 
     #[rstest]

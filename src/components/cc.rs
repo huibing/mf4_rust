@@ -1,6 +1,5 @@
 pub mod conversion {
-    use std::fs::File;
-    use std::io::BufReader;
+    use std::io::Cursor;
     use crate::block::BlockInfo;
     use crate::data_serde::{DataValue, StringOrReal};
     use crate::parser::{get_clean_text, get_block_desc_by_name, peek_block_type};
@@ -64,7 +63,7 @@ pub mod conversion {
     }
 
     impl Conversion {
-        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
+        pub fn new(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<Self, Box<dyn std::error::Error>> {
             if offset == 0 {
                 return Ok(Self::default())    // allows default
             }
@@ -280,7 +279,7 @@ pub mod conversion {
             }
         }
 
-        pub fn convert_to_mix<T>(&self, buf: &mut BufReader<File>,int: T) -> Result<StringOrReal, Box<dyn std::error::Error>> 
+        pub fn convert_to_mix<T>(&self, buf: &mut Cursor<&[u8]>,int: T) -> Result<StringOrReal, Box<dyn std::error::Error>> 
         where T: Into<f64> {
             let inp: f64 = int.into();
             match &self.cc_type {
@@ -316,7 +315,7 @@ pub mod conversion {
             }
         }
 
-        fn to_mix<T>(conv: &TextOrScale, inp: T, buf: &mut BufReader<File>) -> Result<StringOrReal,  Box<dyn std::error::Error>> 
+        fn to_mix<T>(conv: &TextOrScale, inp: T, buf: &mut Cursor<&[u8]>) -> Result<StringOrReal,  Box<dyn std::error::Error>> 
         where T: Into<f64>{
             match conv {
                 TextOrScale::Text(text) => Ok(StringOrReal::String(text.clone())),
@@ -332,7 +331,7 @@ pub mod conversion {
             }
         }
 
-        pub fn convert_from_text(&self, buf: &mut BufReader<File>, inp: &Vec<String>) -> Result<DataValue, Box<dyn std::error::Error>> {
+        pub fn convert_from_text(&self, buf: &mut Cursor<&[u8]>, inp: &Vec<String>) -> Result<DataValue, Box<dyn std::error::Error>> {
             match &self.cc_type {
                 CcType::Text2Value((text, value)) => {
                     let mut ref_text: Vec<String> = Vec::new();

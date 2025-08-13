@@ -1,6 +1,5 @@
 pub mod channel {
-    use std::io::{Cursor, BufReader};
-    use std::fs::File;
+    use std::io::Cursor;
     use std::fmt::Display;
     use half::f16;
     use indexmap::IndexMap;
@@ -48,7 +47,7 @@ pub mod channel {
     }
 
     impl Channel {
-        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
+        pub fn new(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<Self, DynError> {
             let desc: &BlockDesc = get_block_desc_by_name("CN".to_string()).expect("CN block not found");
             let info: crate::block::BlockInfo = desc.try_parse_buf(buf, offset).unwrap();
             let name: String = get_clean_text(buf, info.get_link_offset_normal("cn_tx_name").unwrap())
@@ -146,7 +145,7 @@ pub mod channel {
             &self.sync_type
         }
 
-        fn is_cg_vlsd_channel(&self, buf: &mut BufReader<File>) -> bool {
+        fn is_cg_vlsd_channel(&self, buf: &mut Cursor<&[u8]>) -> bool {
             if self.cn_type == 1u8 {
                 if self.cn_data != 0x00u64 {
                     let block_type: String = peek_block_type(buf, self.cn_data).unwrap();
@@ -158,7 +157,7 @@ pub mod channel {
             } else { false }
         }
 
-        pub fn get_cg_rec_id(&self, buf: &mut BufReader<File>) -> Option<u64> {  // only for cg vlsd
+        pub fn get_cg_rec_id(&self, buf: &mut Cursor<&[u8]>) -> Option<u64> {  // only for cg vlsd
             if self.is_cg_vlsd_channel(buf) {
                 let cg_desc: &BlockDesc = get_block_desc_by_name("CG".to_string())?;
                 let cg_info = cg_desc.try_parse_buf(buf, self.cn_data).ok()?;
@@ -227,7 +226,7 @@ pub mod channel {
             self.data_type == 10 && self.sub_channels.is_some() && self.cn_compositon != 0
         }
 
-        pub fn get_data_raw(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
+        pub fn get_data_raw(&self, file: &mut Cursor<&[u8]>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
             let bits: u32 = self.get_bit_size();
             if self.get_cn_type() == &1 { 
                 // special case for VLSD ; record bytes are only offset of SD blocks ; this is the same both for SD/CG type VLSD channels
@@ -288,7 +287,7 @@ pub mod channel {
             }
         }
 
-        fn get_byte_array(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<Vec<Vec<u8>>, DynError> {
+        fn get_byte_array(&self, file: &mut Cursor<&[u8]>, dg: &DataGroup, cg: &ChannelGroup) -> Result<Vec<Vec<u8>>, DynError> {
             let mut bytes_array_vec: Vec<Vec<u8>> = Vec::new();
             for i in 0..cg.get_cycle_count() {
                 let rec_data: Vec<u8> = dg.get_cg_data(cg.get_record_id(), i, file)
@@ -305,7 +304,7 @@ pub mod channel {
             Ok(bytes_array_vec)
         }
 
-        pub fn get_data(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
+        pub fn get_data(&self, file: &mut Cursor<&[u8]>, dg: &DataGroup, cg: &ChannelGroup) -> Result<DataValue, DynError> {
             /* handle some exceptions first */
             if self.is_composition() {   // for compact structure
                 let mut value_map: IndexMap<String, DataValue> = IndexMap::new();
@@ -352,22 +351,22 @@ pub mod channel {
             }
         }
 
-        fn gen_value_vec<T>(&self, file: &mut BufReader<File>, dg: &DataGroup, cg: &ChannelGroup) -> Result<Vec<T>, DynError> 
+        fn gen_value_vec<T>(&self, file: &mut Cursor<&[u8]>, dg: &DataGroup, cg: &ChannelGroup) -> Result<Vec<T>, DynError> 
         where T: FromBeBytes + FromLeBytes {  /* function used to read record bytes into channel value*/
-            let mut values: Vec<T> = Vec::new();
-            for i in 0..cg.get_cycle_count() {
-                let rec_data = dg.get_cg_data(cg.get_record_id(), i, file)
+            let sample_num = cg.get_cycle_count();
+            let mut values: Vec<T> = Vec::with_capacity(sample_num as usize);
+            for i in 0..sample_num {
+                let rec_data = dg.get_cn_bytes(cg.get_record_id(), i, file, self)
                                         .ok_or("Invalid record id or cycle count.")?;
-                values.push(self.from_bytes::<T>(&rec_data)?);
+                values.push(self.convert_to::<T>(&rec_data)?);
             }
             Ok(values)
         }
 
-        pub fn from_bytes<T>(&self, rec_bytes: &Vec<u8>) -> Result<T, DynError> 
+        pub fn convert_to<T>(&self, rec_bytes: &[u8]) -> Result<T, DynError> 
         where T: FromBeBytes + FromLeBytes
         {
-            let raw_data: Vec<u8> = rec_bytes[self.byte_offset as usize..
-                                (self.byte_offset + self.get_bytes_num()) as usize].to_vec();
+            let raw_data: Vec<u8> = rec_bytes.to_vec();
             let mut cn_data: Vec<u8> = if self.bit_offset != 0 {
                 right_shift_bytes(&raw_data, self.bit_offset)?
             } else {
@@ -376,19 +375,17 @@ pub mod channel {
             bytes_and_bits(&mut cn_data, self.bit_count);
             let mut data_buf: Cursor<Vec<u8>> = Cursor::new(cn_data);
             match self.data_type {
-                // only distinguish little-edian and big-endian here. Concrete data types are handled in the up
-                // level functions.
                 0|2|4|6|7|8 => Ok(T::from_le_bytes(&mut data_buf)),
                 1|3|5|9 => Ok(T::from_be_bytes(&mut data_buf)),
                 _ => Err("data type not supportted.".into()),
             }
         }
 
-        fn get_bytes_num(&self) -> u32 {
+        pub fn get_bytes_num(&self) -> u32 {
             self.bytes_num
         }
 
-        fn parse_sd_data(&self, file: &mut BufReader<File>, offsets: &Vec<u64>) -> Result<DataValue, DynError> {
+        fn parse_sd_data(&self, file: &mut Cursor<&[u8]>, offsets: &Vec<u64>) -> Result<DataValue, DynError> {
             /* for non-cg vlsd channel ; only support string and raw bytes for now*/
             let data_blocks: Box<dyn VirtualBuf> = read_data_block(file, self.cn_data)?;
             let mut sd_data: Vec<String> = Vec::new();  // todo: is there any other possible data types?
@@ -429,7 +426,7 @@ pub mod channel {
             }
         }
 
-        fn parse_cg_vlsd(&self, file: &mut BufReader<File>, offsets: &Vec<u64>, id: u64, dg: &DataGroup) -> Result<DataValue, DynError>{
+        fn parse_cg_vlsd(&self, file: &mut Cursor<&[u8]>, offsets: &Vec<u64>, id: u64, dg: &DataGroup) -> Result<DataValue, DynError>{
             /* for cg vlsd channel ; only support string and raw bytes for now*/
             let mut res: Vec<String> = Vec::new();
             let mut byte_array: Vec<Vec<u8>> = Vec::new();

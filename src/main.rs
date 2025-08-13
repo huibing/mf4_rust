@@ -1,13 +1,12 @@
 use mf4_parse::Mf4Wrapper;
 use mf4_parse::ChannelLink;
-use mf4_parse::DataValue;
 use std::path::PathBuf;
-use std::time::{Instant, Duration};
-use plotly::{Plot, Scatter};
+use std::time::Instant;
 
 
 
-fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
+
+pub fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
     if let Some(ChannelLink(cn, cg, _)) = mf4.get_channel_link(channel_name) {
         println!("channel info: \n{}", cn);
         println!("channel group comment: {:?}", cg.get_comment());
@@ -30,36 +29,17 @@ fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let start_time = Instant::now();
-    let mut new: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/halffloat_sinus.mf4"), None)?;
-    let duration: Duration = Instant::now() - start_time;
-    println!("load mf4 file time: {:?}", duration.as_secs_f64());
-    println!("channel names: {:?}", new.get_channel_names());
-    display_channel_info("HalfFloat", &new);
-    let data = new.get_channel_data("HalfFloat").unwrap();
-    let raw = new.get_channel_master_data("HalfFloat").unwrap();
-    
-    
-
-    /* plotters */
-    let mut plot = Plot::new();
-    if let DataValue::REAL(data) = data {
-        if let DataValue::REAL(t) = raw {
-            let trace = Scatter::new(t.to_vec(), data).name("HalfFloat");
-            plot.add_trace(trace);
-        }
+    let mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from(r"D:\ETASData\INCA7.2\Measure\jingtai 17-07-2025 03_40_33 PM.mf4"), None).unwrap();
+    let start = Instant::now();
+    let channel_name = ["IVE_BdyVZRear"];
+    for channel_name in channel_name {
+        let _ = mf4.get_channel_data(channel_name).unwrap();
+        //println!("{:?}", channel_data);
+        println!("1 Time elapsed: {:?} channel data", start.elapsed());
+        let _ = mf4.get_channel_master_data(channel_name).unwrap();
+        //println!("{:?}", master);
+        println!("2 Time elapsed: {:?} master data", start.elapsed());
     }
-
-    let data1 = new.get_channel_data("Float").unwrap();
-    let raw1 = new.get_channel_master_data("Float").unwrap();
-    if let DataValue::REAL(data) = data1 {
-        if let DataValue::REAL(t) = raw1 {
-            let trace = Scatter::new(t.to_vec(), data).name("Float");
-            plot.add_trace(trace);
-        }
-    }
-
-    plot.write_html("out.html");
     Ok(())
 }
 
@@ -87,7 +67,7 @@ pub mod test {
 
     #[rstest]
     fn mf4_wrapper_test2() {
-        let mut mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from(r"D:\ETASData\INCA7.2\Measure\jingtai 17-07-2025 03_40_33 PM.mf4"), None).unwrap();
+        let mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from(r"D:\ETASData\INCA7.2\Measure\jingtai 17-07-2025 03_40_33 PM.mf4"), None).unwrap();
         let start = Instant::now();
         let channel_name = "IVE_BdyVZRear";
         let _ = mf4.get_channel_data(channel_name).unwrap();

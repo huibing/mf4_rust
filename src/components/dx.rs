@@ -2,20 +2,20 @@
 */
 
 pub mod dataxxx {
-    use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
-    use std::fs::File;
+    use std::io::{Cursor, Read, Seek, SeekFrom};
     use std::fmt::Display;
     use flate2::bufread::ZlibDecoder;
-
     use crate::parser::{get_block_desc_by_name, peek_block_type};
     use crate::block::{BlockInfo, BlockDesc};
+    use std::cell::Cell;
+
 
     type DynError = Box<dyn std::error::Error>;
 
     /* This trait should be implemented to DT SD and RD DL blocks
        This trait is used to read physically incontinuous data block linked by DL block*/
     pub trait VirtualBuf{
-        fn read_virtual_buf(&self, from: &mut BufReader<File>, virtual_offset:u64, buf: &mut [u8]) 
+        fn read_virtual_buf(&self, from: &mut Cursor<&[u8]>, virtual_offset:u64, buf: &mut [u8]) 
             -> Result<(), DynError>;
         
         fn get_data_len(&self) -> u64;
@@ -28,7 +28,7 @@ pub mod dataxxx {
 
     impl DT{
         /* This should also works for SD and RD blocks; they have samilar data structure  */
-        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError>{
+        pub fn new(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<Self, DynError>{
             if offset == 0 {
                 return Err("Invalid data block offset: 0".into());
             }
@@ -48,7 +48,7 @@ pub mod dataxxx {
     }
 
     impl VirtualBuf for DT{
-        fn read_virtual_buf(&self, from: &mut BufReader<File>, virtual_offset:u64, buf: &mut [u8]) -> Result<(), DynError> {
+        fn read_virtual_buf(&self, from: &mut Cursor<&[u8]>, virtual_offset:u64, buf: &mut [u8]) -> Result<(), DynError> {
             let file_offset = self.data_offset + virtual_offset;
             from.seek(SeekFrom::Start(file_offset))?;
             let left_bytes_num = self.data_len - virtual_offset;
@@ -74,7 +74,7 @@ pub mod dataxxx {
     }
 
     impl DZBlock {
-        pub fn new(file: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
+        pub fn new(file: &mut Cursor<&[u8]>, offset: u64) -> Result<Self, DynError> {
             let dz_desc: &BlockDesc = get_block_desc_by_name("DZ".to_string()).unwrap();
             let mut dz_info: BlockInfo = dz_desc.try_parse_buf(file, offset)?;
             let data_len: u64 = dz_info.get_data_value_first::<u64>("dz_data_length")
@@ -123,7 +123,7 @@ pub mod dataxxx {
             self.get_orig_len()
         }
         #[allow(unused_variables)]
-        fn read_virtual_buf(&self, from: &mut BufReader<File>, virtual_offset:u64, buf: &mut [u8]) 
+        fn read_virtual_buf(&self, from: &mut Cursor<&[u8]>, virtual_offset:u64, buf: &mut [u8]) 
                     -> Result<(), DynError> {
             let mut cur = Cursor::new(&self.ori_data);
             cur.seek(SeekFrom::Start(virtual_offset))?;
@@ -152,9 +152,10 @@ pub mod dataxxx {
         start_offsets_in_file: Vec<u64>,  // file abolute offset
         virtual_offsets: Vec<u64>,
         data_blocks: Vec<Box<dyn VirtualBuf>>,
+        last_index: Cell<usize>,
     }
 
-    fn read_dl_block(buf: &mut BufReader<File>, offset: u64) -> Result<DLBlock, DynError> {
+    fn read_dl_block(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<DLBlock, DynError> {
         /* helper function to read DL block info to construct DataLink */
         buf.seek(SeekFrom::Start(offset))?;
         let mut buffer = [0u8; 4];
@@ -240,7 +241,7 @@ pub mod dataxxx {
     }
 
     impl DataLink {
-        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError>{
+        pub fn new(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<Self, DynError>{
             let mut dl_blocks = Vec::new();
             let mut cur_off = offset;
             loop {
@@ -309,6 +310,7 @@ pub mod dataxxx {
                 start_offsets_in_file,
                 virtual_offsets,
                 data_blocks,
+                last_index: Cell::new(0),
             })
         }
 
@@ -330,24 +332,38 @@ pub mod dataxxx {
     }
 
     impl VirtualBuf for DataLink {
-        fn read_virtual_buf(&self, from: &mut BufReader<File>, virtual_offset:u64, buf: &mut [u8]) 
+        fn read_virtual_buf(&self, from: &mut Cursor<&[u8]>, virtual_offset:u64, buf: &mut [u8]) 
         -> Result<(), DynError> {
             let end_index = virtual_offset + buf.len() as u64;
             if end_index > self.total_len {
                 return Err("Virtual offset out of range.".into());
             } else {
-                let start_block_id: usize = {
-                    // there is chance that start or end index exceeds the max of virtual offsets
-                    self.virtual_offsets.iter()
-                            .position(|x| *x > virtual_offset)
-                            .unwrap_or(self.virtual_offsets.len()) - 1
+                let start_block_id: usize = {    // does not need to be atomic; 
+                    // also binary search is not needed because when reading a block, it is read sequentially
+                    let mut last_index = self.last_index.get();
+                    if last_index >= self.virtual_offsets.len() || self.virtual_offsets[last_index] > virtual_offset {
+                        last_index = 0;   // reset
+                    }
+                    while last_index < self.virtual_offsets.len() && self.virtual_offsets[last_index] <= virtual_offset {
+                        last_index += 1;
+                    }
+                    last_index -= 1;    // decrement by 1 to get the last valid index
+                    self.last_index.set(last_index);
+                    last_index
                 };
                 let end_block_id: usize = {
-                    self.virtual_offsets.iter()
-                            .position(|x| *x > end_index)
-                            .unwrap_or(self.virtual_offsets.len()) - 1
+                    let mut last_index = self.last_index.get();
+                    if last_index >= self.virtual_offsets.len() || self.virtual_offsets[last_index] > end_index {
+                        last_index = 0;   // reset
+                    }
+                    while last_index < self.virtual_offsets.len() && self.virtual_offsets[last_index] <= end_index {
+                        last_index += 1;
+                    }
+                    last_index -= 1;    // decrement by 1 to get the last valid index
+                    self.last_index.set(last_index);
+                    last_index
                 };
-                if start_block_id == end_block_id {
+                if start_block_id == end_block_id {  // continues in the same block
                     /* data in one DT block */
                     let data_block: &Box<dyn VirtualBuf> = &self.data_blocks[start_block_id];
                     let data_start_virtual_offset = self.virtual_offsets[start_block_id];
@@ -391,7 +407,7 @@ pub mod dataxxx {
     }
 
     impl HL {
-        fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
+        fn new(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<Self, DynError> {
             let desc: &BlockDesc = get_block_desc_by_name("HL".to_string()).unwrap();
             let hl_info: BlockInfo = desc.try_parse_buf(buf, offset)?;
             let hl_dl_first: u64 = hl_info.get_link_offset_normal("hl_dl_first")
@@ -410,7 +426,7 @@ pub mod dataxxx {
         }
     }
 
-    pub fn read_data_block(buf: &mut BufReader<File>, offset: u64) -> Result<Box<dyn VirtualBuf>, DynError> {
+    pub fn read_data_block(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<Box<dyn VirtualBuf>, DynError> {
         if offset == 0 {
             return Ok(Box::new(DT::default()))   //  dg_data could be nil with empty data
         }

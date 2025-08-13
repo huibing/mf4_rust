@@ -5,12 +5,10 @@ pub mod datagroup {
     use crate::components::cn::channel::Channel;
     use crate::parser::{get_block_desc_by_name, get_clean_text, get_child_links};
     use crate::components::dx::dataxxx::{VirtualBuf, read_data_block};
-    use crate::data_serde::{DataValue, FromLeBytes, FromBeBytes, UTF16String};
+    use crate::data_serde::DataValue;
     use std::collections::{HashMap, HashSet};
-    use std::io::BufReader;
-    use std::fs::File;
+    use std::io::Cursor;
     use std::fmt::Display;
-    use half::f16;
 
     type DynError = Box<dyn std::error::Error>;
     #[derive(Debug, Clone, Copy)]
@@ -38,75 +36,10 @@ pub mod datagroup {
             &self.2
         }
 
-        fn gen_value_vec<T>(&self, file: &mut BufReader<File>) -> Result<Vec<T>, DynError> 
-        where T: FromLeBytes+FromBeBytes {
-            let mut v: Vec<T> = Vec::new();
-            for i in 0..self.get_channel_group().get_cycle_count() {
-                let rec_data = self.get_data_group()    
-                                            .get_cg_data(self.get_channel_group().get_record_id(), i, file)
-                                            .ok_or("Invalid record id or cycle count.")?;
-                v.push(self.get_channel().from_bytes::<T>(&rec_data).unwrap());
-            }
-            Ok(v)
-        }
-
-        pub fn yield_channel_data(&self, file: &mut BufReader<File>) -> Result<DataValue, DynError> {
-            /* same as Channel.get_data_raw */
-            let cn: &Channel = self.get_channel();
-            let bits: u32 = cn.get_bit_size();
-            match cn.get_data_type() {
-                 0 | 1 => {
-                    if bits <= 8 {
-                        Ok(DataValue::UINT8(self.gen_value_vec::<u8>(file)?))
-                    } else if bits>8 && bits <= 16 {
-                        Ok(DataValue::UINT16(self.gen_value_vec::<u16>(file)?))
-                    } else if bits>16 && bits <= 32 {
-                        Ok(DataValue::UINT32(self.gen_value_vec::<u32>(file)?))
-                    } else if bits>32 && bits <= 64 {
-                        Ok(DataValue::UINT64(self.gen_value_vec::<u64>(file)?))
-                    } else {
-                        Err("Invalid bit size.".into())
-                    }
-                },
-                2 | 3 => {
-                    if bits <= 8 {
-                        Ok(DataValue::INT8(self.gen_value_vec::<i8>(file)?))
-                    } else if bits>8 && bits <= 16 {
-                        Ok(DataValue::INT16(self.gen_value_vec::<i16>(file)?))
-                    } else if bits>16 && bits <= 32 {
-                        Ok(DataValue::INT32(self.gen_value_vec::<i32>(file)?))
-                    } else if bits>32 && bits <= 64 {
-                        Ok(DataValue::INT64(self.gen_value_vec::<i64>(file)?))
-                    } else {
-                        Err("Invalid bit size.".into())
-                    }
-                },
-                4 | 5 => {
-                    if bits == 16 {
-                        Ok(DataValue::FLOAT16(self.gen_value_vec::<f16>(file)?))
-                    } else if bits == 32 {
-                        Ok(DataValue::SINGLE(self.gen_value_vec::<f32>(file)?))
-                    } else if bits == 64 {
-                        Ok(DataValue::REAL(self.gen_value_vec::<f64>(file)?))
-                    } else {
-                        Err("Invalid bit size.".into())
-                    }
-                },
-                6 | 7 => {
-                    Ok(DataValue::STRINGS(self.gen_value_vec::<String>(file)?))
-                },
-                8 | 9 => {
-                    let s = self.gen_value_vec::<UTF16String>(file)?;
-                    Ok(DataValue::STRINGS(s.into_iter().map(|s| s.inner).collect()))
-                },
-                _ => Err("Invalid data type.".into())
-            }
-        }
-
-        pub fn get_master_channel_data(&self, file: &mut BufReader<File>) -> Result<DataValue, DynError> {
+        pub fn get_master_channel_data(&self, file: &mut Cursor<&[u8]>) -> Result<DataValue, DynError> {
             if self.get_channel().is_master() {
                 // not possible if the channel link is build from current API
-                Ok(self.yield_channel_data(file)?)
+                Err("Master channel cannot have data.".into())
             } else {
                 let cg: &ChannelGroup = self.get_channel_group();
                 let dg: &DataGroup = self.get_data_group();
@@ -131,7 +64,7 @@ pub mod datagroup {
 
     unsafe impl Send for DataGroup {}
 
-    fn read_rec_id(rec_id_size: RecIDSize, buf: &Box<dyn VirtualBuf>, from:&mut BufReader<File>, v_offset: u64) -> Result<(u64, u8), DynError> {
+    fn read_rec_id(rec_id_size: RecIDSize, buf: &Box<dyn VirtualBuf>, from:&mut Cursor<&[u8]>, v_offset: u64) -> Result<(u64, u8), DynError> {
         // read record id to process ; Note this function will move buf's cursor
         // u64: record id u8: bytes read
         match rec_id_size {
@@ -159,7 +92,7 @@ pub mod datagroup {
     }
 
     impl DataGroup {
-        pub fn new_unchecked(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
+        pub fn new_unchecked(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<Self, DynError> {
             let dg_desc: &crate::block::BlockDesc = get_block_desc_by_name("DG".to_string()).unwrap();
             let info: crate::block::BlockInfo = dg_desc.try_parse_buf(buf, offset)?;
             let rec_id_size: RecIDSize = match info.get_data_value_first::<u8>("dg_rec_id_size") {
@@ -227,7 +160,7 @@ pub mod datagroup {
              })
         }
 
-        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<Self, DynError> {
+        pub fn new(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<Self, DynError> {
             let dg = Self::new_unchecked(buf, offset)?;
             let mut cur_off: u64 = 0; // virtual offset always start from 0
             let mut cycle_count_map: HashMap<u64, u64> = HashMap::new();
@@ -277,7 +210,7 @@ pub mod datagroup {
             }
         }
 
-        pub fn get_cg_data(&self, rec_id: u64, index: u64, file: &mut BufReader<File>) -> Option<Vec<u8>> {
+        pub fn get_cg_data(&self, rec_id: u64, index: u64, file: &mut Cursor<&[u8]>) -> Option<Vec<u8>> {
             let virtual_offset = self.get_rec_id_offset(rec_id, index)?;
             let data_block: &Box<dyn VirtualBuf> = &self.data_block;
             let mut temp_buf = vec![0u8; self.rec_id_map.get(&rec_id)?.0 as usize];
@@ -285,7 +218,16 @@ pub mod datagroup {
             Some(temp_buf)
         }
 
-        pub fn get_vlsd_cg_data(&self, rec_id: u64, index: u64, file: &mut BufReader<File>) -> Option<Vec<u8>> {
+        pub fn get_cn_bytes(&self, rec_id: u64, index: u64, file: &mut Cursor<&[u8]>, cn: &Channel) -> Option<Vec<u8>> {
+            let virtual_offset = self.get_rec_id_offset(rec_id, index)? + cn.get_byte_offset() as u64;
+            let data_block: &Box<dyn VirtualBuf> = &self.data_block;
+            let mut temp_buf = vec![0u8; cn.get_bytes_num() as usize];
+            data_block.read_virtual_buf(file, virtual_offset, &mut temp_buf[..]).ok()?;
+            Some(temp_buf)
+        }
+
+
+        pub fn get_vlsd_cg_data(&self, rec_id: u64, index: u64, file: &mut Cursor<&[u8]>) -> Option<Vec<u8>> {
             let virtual_offset = self.get_rec_id_offset(rec_id, index)?;
             let data_block: &Box<dyn VirtualBuf> = &self.data_block;
             let mut four_bytes: [u8; 4] = [0u8; 4];

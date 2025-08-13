@@ -1,6 +1,5 @@
 pub mod sourceinfo {
-    use std::io::BufReader;
-    use std::fs::File;
+    use std::io::Cursor;
     use crate::block::BlockInfo;
     use crate::parser::{get_clean_text, get_block_desc_by_name};
     use std::fmt::Display;
@@ -70,7 +69,7 @@ pub mod sourceinfo {
     }
 
     impl SourceInfo {
-        pub fn new(buf: &mut BufReader<File>, offset: u64) -> Result<SourceInfo, Box<dyn std::error::Error>> {
+        pub fn new(buf: &mut Cursor<&[u8]>, offset: u64) -> Result<SourceInfo, Box<dyn std::error::Error>> {
             if offset == 0 {
                 return Ok(Self::default()) // allows default
             }

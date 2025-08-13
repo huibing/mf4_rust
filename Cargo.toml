@@ -34,7 +34,12 @@ plotly = "0.8.4"
 wasm-bindgen = "0.2.100"
 imp = "0.1.0"
 serde-wasm-bindgen = "0.4"
+memmap2 = "0.9.7"
 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+flate2 = { version = "1.0.17", features = ["rust_backend"], default-features = false }
 getrandom = { version = "0.2", features = ["js"] }
+
+[profile.release]
+debug = true

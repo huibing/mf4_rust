@@ -30,8 +30,6 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
     use serde::{Deserialize, Serialize};
     use toml::Value;
     use byteorder::{ByteOrder, LittleEndian};
-    use std::io::BufReader;
-    use std::fs::File;
     use std::io::{Seek, SeekFrom, Read, Cursor};
     use indexmap::IndexMap;
     use std::convert::{TryInto, TryFrom};
@@ -239,7 +237,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
             }
         }
 
-        pub fn try_parse_buf(&self, buf: &mut BufReader<File>, offset: u64) -> Result<BlockInfo, Box<dyn std::error::Error>>{
+        pub fn try_parse_buf(&self, buf: &mut Cursor<&[u8]>, offset: u64) -> Result<BlockInfo, Box<dyn std::error::Error>>{
             // read id
             buf.seek(SeekFrom::Start(offset)).unwrap();
             let mut id_buf = [0u8;4];
@@ -441,10 +439,9 @@ pub mod parser {
     use crate::components::cg::channelgroup::ChannelGroup;
     use crate::data_serde::DataValue;
     use rust_embed::RustEmbed;
-    use std::io::{BufReader, Seek, Read, SeekFrom};
+    use std::io::{Cursor, Seek, Read, SeekFrom};
     use std::path::PathBuf;
     use std::fs::File;
-    use std::cell::RefCell;
     use std::thread;
     use std::sync::mpsc;
     use byteorder::{LittleEndian, ByteOrder};
@@ -453,7 +450,9 @@ pub mod parser {
     use lazy_static::lazy_static;
     use lru::LruCache;
     use std::num::NonZeroUsize;
+    use std::cell::RefCell;
     use crate::components::dg::datagroup::{DataGroup, ChannelLink};
+    use memmap2::Mmap;
 
     type DynError = Box<dyn std::error::Error>;
     #[derive(RustEmbed)]
@@ -471,7 +470,7 @@ pub mod parser {
     }
 
     impl MdfInfo {
-        pub fn new(file: &mut BufReader<File>) -> Result<Self, DynError>{
+        pub fn new(file: &mut Cursor<&[u8]>) -> Result<Self, DynError>{
             // manually parse id block
             file.seek(SeekFrom::Start(0))?;
             let mut buf = [0u8;8];
@@ -531,7 +530,7 @@ pub mod parser {
         DESC_MAP.get(&name)
     }
 
-    pub fn get_block_desc<'a>(file: &'a mut BufReader<File>, offset: u64) -> Result<&'static BlockDesc, DynError>{
+    pub fn get_block_desc<'a>(file: &'a mut Cursor<&[u8]>, offset: u64) -> Result<&'static BlockDesc, DynError>{
         //use file offset to acquire the actual block type and its block desc
         if offset == 0 {
             return Err("Invalid offset".into());
@@ -551,7 +550,7 @@ pub mod parser {
         Ok(toml::from_str(std::str::from_utf8(toml_file.data.as_ref())?)?)
     }
     
-    pub fn get_child_info<'a>(file: &mut BufReader<File>, first_child_offset: u64, block_type: &'static str) 
+    pub fn get_child_info<'a>(file: &mut Cursor<&[u8]>, first_child_offset: u64, block_type: &'static str) 
         -> Result<Vec<BlockInfo>, DynError> {
         let mut link_list: Vec<BlockInfo> = Vec::new();
         let blk_str: String = block_type.to_lowercase();
@@ -574,7 +573,7 @@ pub mod parser {
         Ok(link_list)
     }
 
-    pub fn get_child_links<'a>(file: &mut BufReader<File>, first_child_offset: u64, block_type: &'static str) 
+    pub fn get_child_links<'a>(file: &mut Cursor<&[u8]>, first_child_offset: u64, block_type: &'static str) 
         -> Result<Vec<u64>, DynError> {
         let mut link_list: Vec<u64> = Vec::new();
         let blk_str: String = block_type.to_lowercase();
@@ -598,13 +597,13 @@ pub mod parser {
         Ok(link_list)
     }
 
-    pub fn get_tx_data(file: &mut BufReader<File>, tx_offset: u64) -> Result<String, DynError> {
+    pub fn get_tx_data(file: &mut Cursor<&[u8]>, tx_offset: u64) -> Result<String, DynError> {
         let desc = get_block_desc(file, tx_offset)?;
         let tx_info: BlockInfo = desc.try_parse_buf(file, tx_offset)?;
         Ok(tx_info.get_data_value("tx_data").unwrap().clone().try_into()?)
     }
 
-    pub fn get_text(file :&mut BufReader<File>, offset: u64) -> Result<String, DynError> {
+    pub fn get_text(file :&mut Cursor<&[u8]>, offset: u64) -> Result<String, DynError> {
         let desc = get_block_desc(file, offset)?;
         let tx_info: BlockInfo = desc.try_parse_buf(file, offset)?;
         match tx_info.get_id().as_str() {
@@ -622,13 +621,13 @@ pub mod parser {
         }
     }
 
-    pub fn get_clean_text(file :&mut BufReader<File>, offset: u64) -> Result<String, DynError> {
+    pub fn get_clean_text(file :&mut Cursor<&[u8]>, offset: u64) -> Result<String, DynError> {
         // TX and MD block will have \0 terminated string; use this function to remove the tailing \0
         let text = get_text(file, offset)?;
         Ok(text.trim_end_matches('\0').to_string())
     }
 
-    pub fn peek_block_type(file: &mut BufReader<File>, offset: u64) -> Result<String, DynError> {
+    pub fn peek_block_type(file: &mut Cursor<&[u8]>, offset: u64) -> Result<String, DynError> {
         if offset == 0 || offset % 8 != 0 {
             Err("Invalid block start offset".into())
         } else {
@@ -648,7 +647,7 @@ pub mod parser {
     }
 
     impl Mdf {
-        pub fn new<T>(file: &mut BufReader<File>, app: Option<&T>) -> Result<Self, DynError>  where T: Fn(f64) + 'static {
+        pub fn new<T>(file: &mut Cursor<&[u8]>, app: Option<&T>) -> Result<Self, DynError>  where T: Fn(f64) + 'static {
             let mdfinfo = MdfInfo::new(file)?;
             let mut data = Vec::new();
             let dg_links = get_child_links(file, mdfinfo.first_dg_offset, "DG")?;
@@ -729,16 +728,19 @@ pub mod parser {
     
     pub struct Mf4Wrapper{
         mdf: Mdf,
-        buf: RefCell<BufReader<File>>,
+        buf: Mmap,
         channel_cache: HashMap<String, (usize, usize, usize)>, // (dg_index, cg_index, cn_index)
-        master_cache: LruCache<(usize, usize), DataValue>  // (dg_index, cg_index)
+        master_cache: RefCell<LruCache<(usize, usize), DataValue>>  // (dg_index, cg_index)
     }
         
 
     impl Mf4Wrapper {
         pub fn new<T>(file: PathBuf, app: Option<&T>) -> Result<Self, DynError>  where T: Fn(f64) + 'static {
-            let buf: RefCell<BufReader<File>> = RefCell::new(BufReader::new(File::open(file)?));
-            let mdf: Mdf = Mdf::new(&mut buf.borrow_mut(), app)?;
+            let file_obj = File::open(file)?;
+            let mmap = unsafe { Mmap::map(&file_obj)? };
+            let data: &[u8] = &mmap;
+            let mut buf: Cursor<&[u8]> = Cursor::new(data);
+            let mdf: Mdf = Mdf::new(&mut buf, app)?;
             let mut channel_cache: HashMap<String, (usize, usize, usize)> = HashMap::new();
             for (dg_index, dg) in mdf.data.iter().enumerate() {
                 for (cg_index, cg) in dg.get_channle_groups().iter().enumerate() {
@@ -747,10 +749,10 @@ pub mod parser {
                     }
                 }
             }
-            let master_cache: LruCache<(usize, usize), DataValue> = LruCache::new(NonZeroUsize::new(5).unwrap());
+            let master_cache = RefCell::new(LruCache::new(NonZeroUsize::new(5).unwrap()));
             Ok(Self {
                 mdf,
-                buf,
+                buf: mmap,
                 channel_cache,
                 master_cache,
             })
@@ -769,7 +771,8 @@ pub mod parser {
 
         pub fn get_channel_data(&self, channel_name: &str) -> Option<DataValue>{
             if let Some(ChannelLink(cn, cg, dg)) = self.get_channel_link(channel_name) {
-                Some(cn.get_data(&mut *self.buf.borrow_mut(), dg, cg).ok()?)
+                let mut buf: Cursor<&[u8]> = Cursor::new(&self.buf);
+                Some(cn.get_data(&mut buf, dg, cg).ok()?)
             } else {
                 None
             }
@@ -777,21 +780,26 @@ pub mod parser {
 
         pub fn get_channel_raw_data(&self, channel_name: &str) -> Option<DataValue> {
             if let Some(ChannelLink(cn, cg, dg)) = self.get_channel_link(channel_name) {
-                Some(cn.get_data_raw(&mut *self.buf.borrow_mut(), dg, cg).ok()?)
+                let mut buf: Cursor<&[u8]> = Cursor::new(&self.buf);
+                Some(cn.get_data_raw(&mut buf, dg, cg).ok()?)
             } else { None }
         }
 
-        pub fn get_channel_master_data(&mut self, channel_name: &str) -> Option<&DataValue> {
+        pub fn get_channel_master_data(&self, channel_name: &str) -> Option<DataValue> {
             let (dg_index, cg_index, cn_index) = self.channel_cache.get(channel_name)?;
-            if self.master_cache.contains(&(*dg_index, *cg_index)) {
-                self.master_cache.get(&(*dg_index, *cg_index))
+            let mut master_cache = self.master_cache.borrow_mut();
+            if master_cache.contains(&(*dg_index, *cg_index)) {
+                let d = master_cache.get(&(*dg_index, *cg_index)); // get the data from the master cache
+                d.map(|d| d.clone())
             } else {
                 let dg: &DataGroup = self.mdf.nth_dg(*dg_index)?;
                 let cg: &ChannelGroup = dg.nth_cg(*cg_index)?;
                 let cn: &crate::components::cn::channel::Channel = cg.nth_cn(*cn_index)?;
                 let cl: ChannelLink<'_> = ChannelLink(cn, cg, dg);
-                self.master_cache.put((*dg_index, *cg_index), cl.get_master_channel_data(&mut *self.buf.borrow_mut()).ok()?);
-                Some(self.master_cache.get(&(*dg_index, *cg_index)).unwrap())
+                let mut buf: Cursor<&[u8]> = Cursor::new(&self.buf);
+                let data = cl.get_master_channel_data(&mut buf).ok()?;
+                master_cache.put((*dg_index, *cg_index), data.clone());
+                Some(data)
             }
         }
 
@@ -822,9 +830,10 @@ pub mod parser {
 #[cfg(test)]
 pub mod test_block {
     use crate::block::*;
-    use std::{fs::{self, File}, io::{BufReader, Write}};
+    use std::{fs::{self, File}, io::{Cursor, Write}};
     use rust_embed::RustEmbed;
     use crate::data_serde::DataValue;
+    use memmap2::Mmap;
 
     #[derive(RustEmbed)]
     #[folder = "test/"]
@@ -840,7 +849,8 @@ pub mod test_block {
         let mut new_file = File::create("temp.mf4").unwrap();
         new_file.write(file_data.data.as_ref()).unwrap();
         let file = File::open("temp.mf4").unwrap();
-        let mut buf = BufReader::new(file);
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
+        let mut buf: Cursor<&[u8]> = Cursor::new(&mmap);
         let block_info = block.try_parse_buf(&mut buf, 0x8db0).unwrap();  // one DG block starts at offset 992 in test_mdf.mf4 file
         assert_eq!(block_info.links.len(), 4);
         assert_eq!(block_info.data.len(), 2);
@@ -871,11 +881,12 @@ pub mod test_block {
 
 #[cfg(test)]
 pub mod parser_test {
-    use std::io::BufReader;
+    use std::io::Cursor;
     use std::path::PathBuf;
     use crate::parser::*;
     use crate::block::*;
     use rstest::*;
+    use memmap2::Mmap;
 
     #[test]
     fn test_parse_toml() {
@@ -886,7 +897,8 @@ pub mod parser_test {
     #[test]
     fn test_parse_mdf_header() {
         let file = std::fs::File::open("test/1.mf4").unwrap();
-        let mut buf = BufReader::new(file);
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
+        let mut buf: Cursor<&[u8]> = Cursor::new(&mmap);
         let mdf = MdfInfo::new(&mut buf).unwrap(); 
         assert_eq!(mdf.version, "4.10".to_string());
         assert_eq!(mdf.version_num, 410);
@@ -898,7 +910,8 @@ pub mod parser_test {
     #[test]
     fn test_get_block_desc() {
         let file = std::fs::File::open("test/1.mf4").unwrap();
-        let mut buf = BufReader::new(file);
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
+        let mut buf: Cursor<&[u8]> = Cursor::new(&mmap);
         let block = get_block_desc(&mut buf, 0x8db0).unwrap();
         assert!(block.check_id("##DG".as_bytes()));
         let block = get_block_desc(&mut buf, 0x40).unwrap();
@@ -908,7 +921,8 @@ pub mod parser_test {
     #[test]
     fn test_get_child_link_list() {
         let file: std::fs::File = std::fs::File::open("test/1.mf4").unwrap();
-        let mut buf: BufReader<std::fs::File> = BufReader::new(file);
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
+        let mut buf: Cursor<&[u8]> = Cursor::new(&mmap);
         let mdf: MdfInfo = MdfInfo::new(&mut buf).unwrap();
         let link_list: Vec<BlockInfo> = get_child_info(&mut buf, 
                                                                 mdf.first_dg_offset, "DG").unwrap();
@@ -935,7 +949,8 @@ pub mod parser_test {
     #[test]
     fn test_parse_tx_block() {
         let file: std::fs::File = std::fs::File::open("test/1.mf4").unwrap();
-        let mut buf: BufReader<std::fs::File> = BufReader::new(file);
+        let mmap = unsafe { Mmap::map(&file).unwrap() };
+        let mut buf: Cursor<&[u8]> = Cursor::new(&mmap);
         let block_desc = get_block_desc(&mut buf, 0x8e30).unwrap();
         println!("{:?}", block_desc);
         let block_info = block_desc.try_parse_buf(&mut buf, 0x8e30).unwrap();
@@ -948,16 +963,16 @@ pub mod parser_test {
     #[case(0x8db0, "DG")]
     #[case(0x8f10, "DL")]
     fn test_peek_block_type(#[case] offset:u64, #[case] expected: &str) {
-        let file: std::fs::File = std::fs::File::open("test/1.mf4").unwrap();
-        let mut buf: BufReader<std::fs::File> = BufReader::new(file);
+        let file = std::fs::read("test/1.mf4").unwrap();
+        let mut buf = Cursor::new(file.as_slice());
         let block_type = peek_block_type(&mut buf, offset).unwrap();
         assert_eq!(block_type, expected);
     }
 
     #[test]
     fn test_mdf_new() {
-        let file = PathBuf::from("test/1.mf4");
-        let mut buf = BufReader::new(std::fs::File::open(file).unwrap());
+        let file = std::fs::read("test/1.mf4").unwrap();
+        let mut buf = Cursor::new(file.as_slice());
         let mdf = Mdf::new::<fn(f64)>(&mut buf, None).unwrap();
         let wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/1.mf4"), None).unwrap();
         let channel_map = mdf.generate_channel_map();
@@ -995,7 +1010,7 @@ pub mod parser_test {
 
     #[test]
     fn test_mdf_wrapper_new() {
-        let mut wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/1.mf4"), None).unwrap();
+        let wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/1.mf4"), None).unwrap();
         println!("{:?}", wrapper.get_channel_names());
         let _ = wrapper.get_channel_data("$CalibrationLog").unwrap();
                                             //.unwrap_or(crate::data_serde::DataValue::CHAR("Error".to_string()));
