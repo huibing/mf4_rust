@@ -9,6 +9,7 @@ pub mod datagroup {
     use std::collections::{HashMap, HashSet};
     use std::io::Cursor;
     use std::fmt::Display;
+    use std::borrow::Cow;
 
     type DynError = Box<dyn std::error::Error>;
     #[derive(Debug, Clone, Copy)]
@@ -218,12 +219,10 @@ pub mod datagroup {
             Some(temp_buf)
         }
 
-        pub fn get_cn_bytes(&self, rec_id: u64, index: u64, file: &mut Cursor<&[u8]>, cn: &Channel) -> Option<Vec<u8>> {
-            let virtual_offset = self.get_rec_id_offset(rec_id, index)? + cn.get_byte_offset() as u64;
+        pub fn get_cn_bytes<'a>(&'a self, rec_id: u64, index: u64, file: &'a mut Cursor<&[u8]>, cn: &'a Channel) -> Result<Cow<'a, [u8]>, DynError> {
+            let virtual_offset = self.get_rec_id_offset(rec_id, index).ok_or("Record not found")? + cn.get_byte_offset() as u64;
             let data_block: &Box<dyn VirtualBuf> = &self.data_block;
-            let mut temp_buf = vec![0u8; cn.get_bytes_num() as usize];
-            data_block.read_virtual_buf(file, virtual_offset, &mut temp_buf[..]).ok()?;
-            Some(temp_buf)
+            data_block.get_data_ref(file, virtual_offset, cn.get_bytes_num() as usize)
         }
 
 

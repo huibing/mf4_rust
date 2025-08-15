@@ -8,6 +8,7 @@ pub mod dataxxx {
     use crate::parser::{get_block_desc_by_name, peek_block_type};
     use crate::block::{BlockInfo, BlockDesc};
     use std::cell::Cell;
+    use std::borrow::Cow;
 
 
     type DynError = Box<dyn std::error::Error>;
@@ -19,6 +20,8 @@ pub mod dataxxx {
             -> Result<(), DynError>;
         
         fn get_data_len(&self) -> u64;
+        // no copy version of read_virtual_buf to reduce copy cost
+        fn get_data_ref<'a>(&'a self, from: &'a mut Cursor<&[u8]>, virtual_offset:u64, len: usize) -> Result<Cow<'a, [u8]>, DynError>;
     }
     #[derive(Debug, Default)]
     pub struct DT{
@@ -63,6 +66,12 @@ pub mod dataxxx {
 
         fn get_data_len(&self) -> u64 {
             self.data_len
+        }
+
+        fn get_data_ref<'a>(&'a self, from: &'a mut Cursor< &[u8]>, virtual_offset:u64, len: usize) -> Result<Cow<'a, [u8]>, DynError> {
+            let buf = from.get_ref();
+            let file_offset = self.data_offset + virtual_offset;
+            Ok(Cow::Borrowed(&buf[file_offset as usize..file_offset as usize + len]))
         }
     }
     #[derive(Debug)]
@@ -122,13 +131,19 @@ pub mod dataxxx {
         fn get_data_len(&self) -> u64 {
             self.get_orig_len()
         }
-        #[allow(unused_variables)]
+        #[allow(unused_variables)]   // from is not needed for DZBlock
         fn read_virtual_buf(&self, from: &mut Cursor<&[u8]>, virtual_offset:u64, buf: &mut [u8]) 
                     -> Result<(), DynError> {
             let mut cur = Cursor::new(&self.ori_data);
             cur.seek(SeekFrom::Start(virtual_offset))?;
             cur.read_exact(buf)?;
             Ok(())
+        }
+        #[allow(unused_variables)]
+        fn get_data_ref<'a>(&'a self, from: &'a mut Cursor< &[u8]>, virtual_offset:u64, len: usize) -> Result<Cow<'a, [u8]>, DynError>{
+            let buf: &[u8] = self.ori_data.as_ref();
+            let offs = virtual_offset as usize;
+            Ok(Cow::Borrowed(&buf[offs..offs+len]))
         }
     }
     #[derive(Debug)]
@@ -261,7 +276,7 @@ pub mod dataxxx {
                     *y
                 })
             }).collect();
-            let mut data_blocks: Vec<Box<dyn VirtualBuf>> = Vec::new();
+            let mut data_blocks: Vec<Box<dyn VirtualBuf>> = Vec::with_capacity(num_of_blocks as usize);
             for dl_block in dl_blocks.iter() {
                 for child_blocks in dl_block.dl_data.iter() {
                     let block_type: String = peek_block_type(buf, *child_blocks).unwrap();
@@ -389,6 +404,59 @@ pub mod dataxxx {
 
         fn get_data_len(&self) -> u64 {
             self.total_len
+        }
+
+        fn get_data_ref<'a>(&'a self, from: &'a mut Cursor<&[u8]>, virtual_offset:u64, len: usize) -> Result<Cow<'a, [u8]>, DynError> {
+            let end_index = virtual_offset + len as u64;
+            if end_index > self.total_len {
+                return Err("Virtual offset out of range.".into());
+            } else {
+                let start_block_id: usize = {    // does not need to be atomic; 
+                    // also binary search is not needed because when reading a block, it is read sequentially
+                    let mut last_index = self.last_index.get();
+                    if last_index >= self.virtual_offsets.len() || self.virtual_offsets[last_index] > virtual_offset {
+                        last_index = 0;   // reset
+                    }
+                    while last_index < self.virtual_offsets.len() && self.virtual_offsets[last_index] <= virtual_offset {
+                        last_index += 1;
+                    }
+                    last_index -= 1;    // decrement by 1 to get the last valid index
+                    self.last_index.set(last_index);
+                    last_index
+                };
+                let end_block_id: usize = {
+                    let mut last_index = self.last_index.get();
+                    if last_index >= self.virtual_offsets.len() || self.virtual_offsets[last_index] > end_index {
+                        last_index = 0;   // reset
+                    }
+                    while last_index < self.virtual_offsets.len() && self.virtual_offsets[last_index] <= end_index {
+                        last_index += 1;
+                    }
+                    last_index -= 1;    // decrement by 1 to get the last valid index
+                    self.last_index.set(last_index);
+                    last_index
+                };
+                if start_block_id == end_block_id {
+                    let data_block: &Box<dyn VirtualBuf> = &self.data_blocks[start_block_id];
+                    let block_offset = virtual_offset - self.virtual_offsets[start_block_id];
+                    data_block.get_data_ref(from, block_offset, len)
+                } else {
+                    // has to copy here because data is incontiguous
+                    let mut data: Vec<u8> = vec![0u8; len];
+                    let blocks: std::iter::Zip<std::slice::Iter<'_, Box<dyn VirtualBuf>>, std::slice::Iter<'_, u64>> = self.data_blocks[start_block_id..=end_block_id]
+                                        .iter().zip(&self.virtual_offsets[start_block_id..=end_block_id]);
+                    let mut cur_offset:u64 = virtual_offset;
+                    for (block, block_start_v_offset) in blocks {
+                        let relative_offset: u64 = cur_offset - block_start_v_offset;
+                        let bytes_to_read: u64 = (block.get_data_len() - relative_offset).min(end_index-cur_offset); // last block will use end - cur instead
+                        block.read_virtual_buf(from, 
+                                relative_offset, 
+                                &mut data[(cur_offset-virtual_offset) as usize..(bytes_to_read+cur_offset-virtual_offset) as usize])?;
+                        cur_offset += bytes_to_read;  // update cursor offset for next iteration
+                    }
+                    Ok(Cow::Owned(data))
+                }
+            }
         }
     }
 

@@ -1,4 +1,3 @@
-use std::io::{Read, Cursor};
 use byteorder::{ByteOrder, LittleEndian, BigEndian};
 use half::f16;
 use indexmap::IndexMap;
@@ -9,133 +8,93 @@ pub struct UTF16String {
 
 
 pub trait FromLeBytes {
-    fn from_le_bytes<T>(buf: &mut T) -> Self
-        where T: Read;
+    fn from_le_bytes(buf: &[u8]) -> Self;
 }
 
 pub trait FromBeBytes {
-    fn from_be_bytes<T>(buf: &mut T) -> Self
-        where T: Read;
-
+    fn from_be_bytes(buf: &[u8]) -> Self;
 }
 
 /* Big Endian */
 impl FromBeBytes for u8 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 1];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self{
         buf[0]
     }
 }
 
 impl FromBeBytes for u16 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 2];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self{
         BigEndian::read_u16(&buf)
     }
 }
 
 impl FromBeBytes for u32 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 4];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self{
         BigEndian::read_u32(&buf)
     }
 }
 
 impl FromBeBytes for u64 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 8];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self{
         BigEndian::read_u64(&buf)
     }
 }
 
 impl FromBeBytes for i8 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 1];
-        bytes.read_exact(&mut buf).unwrap();
-        i8::from_be_bytes(buf)
+    fn from_be_bytes(buf: &[u8]) -> Self{
+        buf[0] as i8
     }
 }
 
 impl FromBeBytes for i16 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 2];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self{
         BigEndian::read_i16(&buf)
     }
 }
 
 impl FromBeBytes for i32 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 4];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self{
         BigEndian::read_i32(&buf)
     }
 }
 
 impl FromBeBytes for i64 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 8];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self{
         BigEndian::read_i64(&buf)
     }
 }
 
 impl FromBeBytes for f16 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self
-    where T: Read {
-        let mut buf = [0u8; 2];
-        bytes.read_exact(&mut buf).unwrap();
-        f16::from_be_bytes(buf)
+    fn from_be_bytes(buf: &[u8]) -> Self{
+        f16::from_be_bytes([buf[0], buf[1]])
     }
 }
 
 impl FromBeBytes for f32 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self
-    where T: Read {
-        let mut buf = [0u8; 4];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self {
         BigEndian::read_f32(&buf)
     }
 }
 
 impl FromBeBytes for f64 {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self
-    where T: Read {
-        let mut buf = [0u8; 8];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self {
         BigEndian::read_f64(&buf)
     }
 }
 
 impl FromBeBytes for String {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf: Vec<u8> = Vec::new();
-        bytes.read_to_end(&mut buf).unwrap();
-        reverse_bytes_array(&mut buf);
-        String::from_utf8(buf).unwrap_or("error during parsing string".to_string())
+    fn from_be_bytes(buf: &[u8]) -> Self{
+        let mut new_arr: Vec<u8> = buf.to_vec();    // has to copy because we are going to reverse it
+        reverse_bytes_array(&mut new_arr);
+        String::from_utf8(new_arr).unwrap_or("ERROR during parsing BE STRING".to_string())
     }
 }
 
 impl FromBeBytes for UTF16String {
-    fn from_be_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf: Vec<u8> = Vec::new();
-        bytes.read_to_end(&mut buf).unwrap();
-        reverse_bytes_array(&mut buf);
-        let u16s = from_u8_vec(&buf).unwrap();
+    fn from_be_bytes(buf: &[u8]) -> Self{
+        let mut new_arr: Vec<u8> = buf.to_vec();
+        reverse_bytes_array(&mut new_arr);
+        let u16s = from_u8_vec(&new_arr).unwrap();
         UTF16String {
             inner: String::from_utf16_lossy(&u16s[..])
         }
@@ -144,132 +103,95 @@ impl FromBeBytes for UTF16String {
 
 /* Little Endian */
 impl FromLeBytes for u8 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 1];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self {
         buf[0]
     }
 }
 
 impl FromLeBytes for u16 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 2];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self{
         LittleEndian::read_u16(&buf)
     }
 }
 
 impl FromLeBytes for u32 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 4];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self{
         LittleEndian::read_u32(&buf)
     }
 }
 
 impl FromLeBytes for u64 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 8];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self{
         LittleEndian::read_u64(&buf)
     }
 }
 
 impl FromLeBytes for i8 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 1];
-        bytes.read_exact(&mut buf).unwrap();
-        i8::from_le_bytes(buf)
+    fn from_le_bytes(buf: &[u8]) -> Self{
+        buf[0] as i8
     }
 }
 
 impl FromLeBytes for i16 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 2];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self{
         LittleEndian::read_i16(&buf)
     }
 }
 
 impl FromLeBytes for i32 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 4];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self{
         LittleEndian::read_i32(&buf)
     }
 }
 
 impl FromLeBytes for i64 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf = [0u8; 8];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self{
         LittleEndian::read_i64(&buf)
     }
 }
 
 impl FromLeBytes for f16 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self
-    where T: Read {
-        let mut buf = [0u8; 2];
-        bytes.read_exact(&mut buf).unwrap();
-        f16::from_le_bytes(buf)
+    fn from_le_bytes(buf: &[u8]) -> Self {
+        f16::from_le_bytes([buf[0], buf[1]])
     }
 }
 
 impl FromLeBytes for f32 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self
-    where T: Read {
-        let mut buf = [0u8; 4];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self {
         LittleEndian::read_f32(&buf)
     }
 }
 
 impl FromLeBytes for f64 {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self
-    where T: Read {
-        let mut buf = [0u8; 8];
-        bytes.read_exact(&mut buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self {
         LittleEndian::read_f64(&buf)
     }
 }
 
 impl FromLeBytes for String {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf: Vec<u8> = Vec::new();
-        bytes.read_to_end(&mut buf).unwrap();
-        String::from_utf8(buf).unwrap_or("error during parsing string".to_string())
+    fn from_le_bytes(buf: &[u8]) -> Self{
+        String::from_utf8(buf.to_vec())
+            .unwrap_or("ERROR during parsing LB STRING".to_string())
     }
 }
 
 impl FromLeBytes for UTF16String {
-    fn from_le_bytes<T>(bytes: &mut T) -> Self 
-    where T: Read{
-        let mut buf: Vec<u8> = Vec::new();
-        bytes.read_to_end(&mut buf).unwrap();
-        let u16s = from_u8_vec(&buf).unwrap();
+    fn from_le_bytes(buf: &[u8]) -> Self{
+        let new_arr: Vec<u8> = buf.to_vec();
+        let u16s = from_u8_vec(&new_arr).unwrap();
         UTF16String {
             inner: String::from_utf16_lossy(&u16s[..])
         }
     }
 }
 
-pub fn parse_le_value<T>(cur: &mut Cursor<Vec<u8>>) -> T
+pub fn parse_le_value<T>(cur: &[u8]) -> T
     where T: FromLeBytes {
         T::from_le_bytes(cur)
     }
 
 
-pub fn parse_be_value<T>(cur: &mut Cursor<Vec<u8>>) -> T
+pub fn parse_be_value<T>(cur: &[u8]) -> T
     where T: FromBeBytes {
         T::from_be_bytes(cur)
     }
@@ -494,6 +416,9 @@ impl TryFrom<DataValue> for Vec<f32> {
     fn try_from(value: DataValue) -> Result<Self, Self::Error> {
         match value {
             DataValue::SINGLE(s) => Ok(s),
+            DataValue::REAL(s) => Ok(s.iter().map(|f| *f as f32).collect()),
+            DataValue::UINT32(s) => Ok(s.into_iter().map(|f| f as f32).collect()),
+            DataValue::UINT64(s) => Ok(s.into_iter().map(|f| f as f32).collect()),
             _ => Err("DataValue is not a float32")
         }
     }
@@ -526,36 +451,35 @@ impl TryFrom<DataValue> for Vec<String> {
 pub mod serde_tests {
     use super::*;
     use rstest::*;
-    use std::io::Cursor;
 
     #[rstest]
     fn test_u8_from_le_bytes() {
-        let mut cursor: Cursor<Vec<u8>> = Cursor::new(vec![0x12u8]);
-        assert_eq!(0x12u8, parse_le_value::<u8>(&mut cursor));
+        let cursor = vec![0x12u8];
+        assert_eq!(0x12u8, parse_le_value::<u8>(&cursor));
     }
 
     #[rstest]
     fn test_u16_from_le_bytes() {
-        let mut cursor: Cursor<Vec<u8>> = Cursor::new(vec![0x12u8, 0x34]);
-        assert_eq!(0x3412u16, parse_le_value::<u16>(&mut cursor));
+        let cursor = vec![0x12u8, 0x34];
+        assert_eq!(0x3412u16, parse_le_value::<u16>(&cursor));
     }
 
     #[rstest]
     fn test_f32_from_le_bytes() {
-        let mut cursor: Cursor<Vec<u8>> = Cursor::new(vec![0x00u8, 0x00, 0x48, 0x41]);
-        assert_eq!(12.5f32, parse_le_value::<f32>(&mut cursor));
+        let cursor = vec![0x00u8, 0x00, 0x48, 0x41];
+        assert_eq!(12.5f32, parse_le_value::<f32>(&cursor));
     }
 
     #[rstest]
     fn test_f32_from_be_bytes() {
-        let mut cursor: Cursor<Vec<u8>> = Cursor::new(vec![0x41u8, 0x48, 0x00, 0x00]);
-        assert_eq!(12.5f32, parse_be_value::<f32>(&mut cursor));
+        let cursor = vec![0x41u8, 0x48, 0x00, 0x00];
+        assert_eq!(12.5f32, parse_be_value::<f32>(&cursor));
     }
 
     #[rstest]
     fn test_f64_from_be_bytes() {
-        let mut cursor = Cursor::new(vec![0x41u8, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
-        assert_eq!(3145728.0f64, parse_be_value::<f64>(&mut cursor));
+        let cursor = vec![0x41u8, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(3145728.0f64, parse_be_value::<f64>(&cursor));
     }
 
     #[rstest]

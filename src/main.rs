@@ -1,3 +1,4 @@
+use mf4_parse::components::cn::channel;
 use mf4_parse::Mf4Wrapper;
 use mf4_parse::ChannelLink;
 use std::path::PathBuf;
@@ -29,15 +30,15 @@ pub fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from(r"D:\ETASData\INCA7.2\Measure\jingtai 17-07-2025 03_40_33 PM.mf4"), None).unwrap();
+    let mf4: Mf4Wrapper = Mf4Wrapper::new(PathBuf::from(r"D:\ETASData\INCA7.2\Measure\jingtai 17-07-2025 03_40_33 PM.mf4"), Some(&|_f|{})).unwrap();
     let start = Instant::now();
-    let channel_name = ["IVE_BdyVZRear"];
+    let channel_name = ["IVE_BdyVZRear"];   // CDCHndlLH_TurnStRght IVE_BdyVZRear CDCInput_UBat  
     for channel_name in channel_name {
-        let _ = mf4.get_channel_data(channel_name).unwrap();
-        //println!("{:?}", channel_data);
-        println!("1 Time elapsed: {:?} channel data", start.elapsed());
-        let _ = mf4.get_channel_master_data(channel_name).unwrap();
-        //println!("{:?}", master);
+        let channel_data: Vec<f64> = mf4.get_channel_data(channel_name).unwrap().try_into()?;
+        println!("data length: {:?}", channel_data.len());
+        println!("1 Time elapsed: {:?} channel data   first 10 samples {:?}", start.elapsed(), &channel_data[0..10]);
+        let master: Vec<f64> = mf4.get_channel_data(channel_name).unwrap().try_into()?;
+        println!("master length: {:?}", master.len());
         println!("2 Time elapsed: {:?} master data", start.elapsed());
     }
     Ok(())

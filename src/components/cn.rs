@@ -3,7 +3,7 @@ pub mod channel {
     use std::fmt::Display;
     use half::f16;
     use indexmap::IndexMap;
-
+    use std::borrow::Cow;
     use crate::block::BlockDesc;
     use crate::components::dg::datagroup::DataGroup;
     use crate::parser::{get_block_desc_by_name, get_child_links, get_clean_text, peek_block_type};
@@ -44,6 +44,7 @@ pub mod channel {
         array: Option<ChannelArray>,
         cn_flags: u32,
         cn_compositon: u64,
+        need_bitwise_operation: bool,
     }
 
     impl Channel {
@@ -115,6 +116,7 @@ pub mod channel {
                     return Err("CN data should not be empty for MLSD channel.".into())
                 }
             }
+            let need_bitwise_operation = bit_offset != 0u8 || bit_count != bytes_num * 8u32;
             Ok(Self {
                 name,
                 source,
@@ -133,7 +135,8 @@ pub mod channel {
                 sub_channels,
                 array,
                 cn_flags,
-                cn_compositon
+                cn_compositon,
+                need_bitwise_operation,
             })
         }
 
@@ -356,27 +359,29 @@ pub mod channel {
             let sample_num = cg.get_cycle_count();
             let mut values: Vec<T> = Vec::with_capacity(sample_num as usize);
             for i in 0..sample_num {
-                let rec_data = dg.get_cn_bytes(cg.get_record_id(), i, file, self)
-                                        .ok_or("Invalid record id or cycle count.")?;
-                values.push(self.convert_to::<T>(&rec_data)?);
+                let rec_data = dg.get_cn_bytes(cg.get_record_id(), i, file, self)?;
+                values.push(self.convert_to::<T>(rec_data)?);
             }
             Ok(values)
         }
 
-        pub fn convert_to<T>(&self, rec_bytes: &[u8]) -> Result<T, DynError> 
+        pub fn convert_to<T>(&self, rec_bytes: Cow<'_, [u8]>) -> Result<T, DynError> 
         where T: FromBeBytes + FromLeBytes
         {
-            let raw_data: Vec<u8> = rec_bytes.to_vec();
-            let mut cn_data: Vec<u8> = if self.bit_offset != 0 {
-                right_shift_bytes(&raw_data, self.bit_offset)?
+            let data: Cow<'_, [u8]> = if self.need_bitwise_operation {
+                let mut raw_data = rec_bytes.into_owned();  // has to copy data, cannot change any data in mf4 file mmap
+                if self.bit_offset != 0 {
+                    raw_data = right_shift_bytes(&raw_data, self.bit_offset)?
+                }
+                bytes_and_bits(&mut raw_data, self.bit_count);
+                Cow::Owned(raw_data)
             } else {
-                raw_data
+                rec_bytes   //   to avoid copying any data
             };
-            bytes_and_bits(&mut cn_data, self.bit_count);
-            let mut data_buf: Cursor<Vec<u8>> = Cursor::new(cn_data);
+            
             match self.data_type {
-                0|2|4|6|7|8 => Ok(T::from_le_bytes(&mut data_buf)),
-                1|3|5|9 => Ok(T::from_be_bytes(&mut data_buf)),
+                0|2|4|6|7|8 => Ok(T::from_le_bytes(&data)),    // Little Endian
+                1|3|5|9 => Ok(T::from_be_bytes(&data)),        // Big Endian
                 _ => Err("data type not supportted.".into()),
             }
         }
@@ -402,13 +407,11 @@ pub mod channel {
                         sd_data.push(raw.trim_end_matches('\0').to_string());
                     },
                     8 => {
-                        let mut data: Cursor<Vec<u8>> = Cursor::new(data_bytes);
-                        let u16str: UTF16String = UTF16String::from_le_bytes(&mut data);
+                        let u16str: UTF16String = UTF16String::from_le_bytes(&data_bytes);
                         sd_data.push(u16str.inner.trim_end_matches('\0').to_string());
                     },
                     9 => {
-                        let mut data: Cursor<Vec<u8>> = Cursor::new(data_bytes);
-                        let u16str: UTF16String = UTF16String::from_be_bytes(&mut data);
+                        let u16str: UTF16String = UTF16String::from_be_bytes(&data_bytes);
                         sd_data.push(u16str.inner.trim_end_matches('\0').to_string());
                     },
                     10 => {
@@ -438,13 +441,11 @@ pub mod channel {
                         res.push(raw.trim_end_matches('\0').to_string());
                     },
                     8 => {
-                        let mut data: Cursor<Vec<u8>> = Cursor::new(rec_data);
-                        let u16str: UTF16String = UTF16String::from_le_bytes(&mut data);
+                        let u16str: UTF16String = UTF16String::from_le_bytes(&rec_data);
                         res.push(u16str.inner.trim_end_matches('\0').to_string());
                     },
                     9 => {
-                        let mut data: Cursor<Vec<u8>> = Cursor::new(rec_data);
-                        let u16str: UTF16String = UTF16String::from_be_bytes(&mut data);
+                        let u16str: UTF16String = UTF16String::from_be_bytes(&rec_data);
                         res.push(u16str.inner.trim_end_matches('\0').to_string());
                     },
                     10 => {
