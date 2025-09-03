@@ -725,10 +725,42 @@ pub mod parser {
         }
     }
 
+    enum FileData {
+        Mmap(Mmap),
+        Buffer(Vec<u8>),
+    }
+
+    impl FileData {
+    /// 返回底层数据的只读切片
+        fn as_bytes(&self) -> &[u8] {
+            match self {
+                FileData::Mmap(m) => m,
+                FileData::Buffer(v) => v,
+            }
+        }
+    }
+
+    fn load_file(path: PathBuf) -> Result<FileData, DynError> {
+        let file = File::open(path)?;
+        let metadata = file.metadata()?;
+        let file_size = metadata.len();
+
+        if file_size > 2 * 1024 * 1024 * 1024 {
+            // 大于 2GB 用 mmap
+            let mmap = unsafe { Mmap::map(&file)? };
+            Ok(FileData::Mmap(mmap))
+        } else {
+            // 小文件直接读入 Vec<u8>
+            let mut buf = Vec::with_capacity(file_size as usize);
+            let mut f = file;
+            f.read_to_end(&mut buf)?;
+            Ok(FileData::Buffer(buf))
+        }
+    }
     
     pub struct Mf4Wrapper{
         mdf: Mdf,
-        buf: Mmap,
+        buf: FileData,
         channel_cache: HashMap<String, (usize, usize, usize)>, // (dg_index, cg_index, cn_index)
         master_cache: RefCell<LruCache<(usize, usize), DataValue>>  // (dg_index, cg_index)
     }
@@ -736,10 +768,8 @@ pub mod parser {
 
     impl Mf4Wrapper {
         pub fn new<T>(file: PathBuf, app: Option<&T>) -> Result<Self, DynError>  where T: Fn(f64) + 'static {
-            let file_obj = File::open(file)?;
-            let mmap = unsafe { Mmap::map(&file_obj)? };
-            let data: &[u8] = &mmap;
-            let mut buf: Cursor<&[u8]> = Cursor::new(data);
+            let file_data = load_file(file)?;
+            let mut buf: Cursor<&[u8]> = Cursor::new(file_data.as_bytes());
             let mdf: Mdf = Mdf::new(&mut buf, app)?;
             let mut channel_cache: HashMap<String, (usize, usize, usize)> = HashMap::new();
             for (dg_index, dg) in mdf.data.iter().enumerate() {
@@ -752,7 +782,7 @@ pub mod parser {
             let master_cache = RefCell::new(LruCache::new(NonZeroUsize::new(5).unwrap()));
             Ok(Self {
                 mdf,
-                buf: mmap,
+                buf: file_data,
                 channel_cache,
                 master_cache,
             })
@@ -771,7 +801,7 @@ pub mod parser {
 
         pub fn get_channel_data(&self, channel_name: &str) -> Option<DataValue>{
             if let Some(ChannelLink(cn, cg, dg)) = self.get_channel_link(channel_name) {
-                let mut buf: Cursor<&[u8]> = Cursor::new(&self.buf);
+                let mut buf: Cursor<&[u8]> = Cursor::new(self.buf.as_bytes());
                 Some(cn.get_data(&mut buf, dg, cg).ok()?)
             } else {
                 None
@@ -780,7 +810,7 @@ pub mod parser {
 
         pub fn get_channel_raw_data(&self, channel_name: &str) -> Option<DataValue> {
             if let Some(ChannelLink(cn, cg, dg)) = self.get_channel_link(channel_name) {
-                let mut buf: Cursor<&[u8]> = Cursor::new(&self.buf);
+                let mut buf: Cursor<&[u8]> = Cursor::new(self.buf.as_bytes());
                 Some(cn.get_data_raw(&mut buf, dg, cg).ok()?)
             } else { None }
         }
@@ -796,7 +826,7 @@ pub mod parser {
                 let cg: &ChannelGroup = dg.nth_cg(*cg_index)?;
                 let cn: &crate::components::cn::channel::Channel = cg.nth_cn(*cn_index)?;
                 let cl: ChannelLink<'_> = ChannelLink(cn, cg, dg);
-                let mut buf: Cursor<&[u8]> = Cursor::new(&self.buf);
+                let mut buf: Cursor<&[u8]> = Cursor::new(self.buf.as_bytes());
                 let data = cl.get_master_channel_data(&mut buf).ok()?;
                 master_cache.put((*dg_index, *cg_index), data.clone());
                 Some(data)
