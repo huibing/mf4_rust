@@ -1,6 +1,7 @@
 use byteorder::{ByteOrder, LittleEndian, BigEndian};
 use half::f16;
 use indexmap::IndexMap;
+use std::fmt::{self, Display};
 
 pub struct UTF16String {
     pub inner: String,
@@ -295,7 +296,7 @@ pub enum DataValue {
 impl DataValue {
     pub fn is_num(&self) -> bool {
         match self {
-            &DataValue::CHAR(_) | &DataValue::STRINGS(_) | &DataValue::BYTEARRAY(_) | &DataValue::STRUCT(_) => false,
+            &DataValue::CHAR(_) | &DataValue::STRINGS(_) | &DataValue::BYTEARRAY(_) | &DataValue::STRUCT(_) | &DataValue::MIXED(_)=> false,
             _ => true
         }
     }
@@ -304,6 +305,78 @@ impl DataValue {
         match self {
             &DataValue::STRINGS(_) => true,
             _ => false
+        }
+    }
+}
+
+macro_rules! fmt_vec_branch {
+    ($f:expr, $name:expr, $v:expr) => {{
+        write!($f, "{} ", $name)?;
+        fmt_vec($f, $v)
+    }};
+}
+
+fn fmt_vec<T: fmt::Display>(f: &mut fmt::Formatter<'_>, v: &Vec<T>) -> fmt::Result {
+    let n = v.len();
+    if n == 0 {
+        return write!(f, "[]");
+    }
+    if n <= 11 {
+        write!(f, "[")?;
+        for (i, item) in v.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", item)?;
+        }
+        write!(f, "]")
+    } else {
+        write!(f, "[")?;
+        for i in 0..10 {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", v[i])?;
+        }
+        write!(f, ", ..., {}", v[n - 1])?;
+        write!(f, "] (len={})", n)
+    }
+}
+
+// 为 DataValue 实现 Display trait，用于格式化输出
+impl Display for DataValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DataValue::CHAR(s) => write!(f, "CHAR({})", s),
+            DataValue::STRINGS(v) => fmt_vec_branch!(f, "STRINGS", v),
+            DataValue::BYTE(v) => fmt_vec_branch!(f, "BYTE", v),
+            DataValue::UINT64(v) => fmt_vec_branch!(f, "UINT64", v),
+            DataValue::UINT8(v) => fmt_vec_branch!(f, "UINT8", v),
+            DataValue::INT8(v) => fmt_vec_branch!(f, "INT8", v),
+            DataValue::INT16(v) => fmt_vec_branch!(f, "INT16", v),
+            DataValue::UINT16(v) => fmt_vec_branch!(f, "UINT16", v),
+            DataValue::INT32(v) => fmt_vec_branch!(f, "INT32", v),
+            DataValue::UINT32(v) => fmt_vec_branch!(f, "UINT32", v),
+            DataValue::INT64(v) => fmt_vec_branch!(f, "INT64", v),
+            DataValue::REAL(v) => fmt_vec_branch!(f, "REAL", v),
+            DataValue::SINGLE(v) => fmt_vec_branch!(f, "SINGLE", v),
+            DataValue::FLOAT16(v) => fmt_vec_branch!(f, "FLOAT16", v),
+            DataValue::STRUCT(map) => {
+                write!(f, "STRUCT {{ ")?;
+                for (i, (k, v)) in map.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", k, v)?;
+                }
+                write!(f, " }}")
+            }
+            DataValue::BYTEARRAY(vv) => {
+                write!(f, "BYTEARRAY(len={})", vv.len())
+            }
+            DataValue::MIXED(v) => {
+                write!(f, "MIXED(len={})", v.len())
+            }
         }
     }
 }
@@ -406,6 +479,7 @@ impl TryFrom<DataValue> for Vec<f64> {
             DataValue::UINT64(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
             DataValue::INT8(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
             DataValue::UINT8(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
+            DataValue::BYTE(s) => Ok(s.into_iter().map(|f| f as f64).collect()),
             _ => Err("DataValue is not a float64")
         }
     }

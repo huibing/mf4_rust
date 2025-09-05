@@ -38,6 +38,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("master length: {:?}", master.len());
         println!("2 Time elapsed: {:?} master data", start.elapsed());
     }
+    //get textual data
+    let channel_name = "SLC_LC_stTarLvl";
+    let data = mf4.get_channel_data(channel_name).unwrap();
+    println!("textual data: {}", data);
+    display_channel_info(channel_name, &mf4);
     Ok(())
 }
 
