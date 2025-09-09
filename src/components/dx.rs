@@ -91,14 +91,18 @@ pub mod dataxxx {
             let ori_data_len: u64 = dz_info.get_data_value_first::<u64>("dz_org_data_length")
                                      .ok_or("Cannot find original data length")?;
             let zip_type: u8 = dz_info.get_data_value_first::<u8>("dz_zip_type").ok_or("Cannot find zip type")?;
-            if zip_type != 0 {
+            if zip_type != 0 && zip_type != 1 {     // add suport for transpose and deflate algo
                 return Err("Unsupported compression type".into());
             }
+            let orig_col_num = dz_info.get_data_value_first::<u32>("dz_zip_parameter").ok_or("Cannot find zip parameter")?;
             if let Some(data) = dz_info.retrieve_data_value("unparsed_data") {
                 let raw_data: Vec<u8> = data.try_into()?;
                 let mut decoder: ZlibDecoder<&[u8]> = ZlibDecoder::new(&raw_data[..]);
                 let mut ori_data: Vec<u8> = Vec::new();
                 decoder.read_to_end(&mut ori_data)?;
+                if zip_type == 1 {
+                    ori_data = transpose(&mut ori_data, orig_col_num as usize, ori_data_len as usize);
+                }
                 if ori_data.len() as u64 != ori_data_len {
                     Err(format!("Invalid de-compressed data length for dz block at {}", offset).into())
                 } else {
@@ -125,6 +129,21 @@ pub mod dataxxx {
         pub fn get_data(&self) -> &[u8] {
             &self.ori_data
         }
+    }
+
+    fn transpose(decompressed_data: &[u8], orig_col_num: usize, total_len: usize) -> Vec<u8> {
+        let orig_row_num = total_len / orig_col_num; // round
+        let left_bytes = total_len - orig_row_num * orig_col_num;
+        let mut transposed_data = vec![0u8; total_len];
+        for i in 0..orig_row_num {
+            for j in 0..orig_col_num {
+                transposed_data[i * orig_col_num + j] = decompressed_data[j * orig_row_num + i];
+            }
+        }
+        for i in 0..left_bytes {   // copy the remaining bytes
+            transposed_data[orig_row_num * orig_col_num + i] = decompressed_data[orig_col_num * orig_row_num + i];
+        }
+        transposed_data
     }
 
     impl VirtualBuf for DZBlock {
@@ -482,7 +501,7 @@ pub mod dataxxx {
                                           .ok_or("Can not find hl link hl_dl_first")?;
             let hl_flags: u16 = hl_info.get_data_value_first("hl_flags").ok_or("Cannot find hl_flags")?;
             let hl_zip_type: u8 = hl_info.get_data_value_first("hl_zip_type").ok_or("Cannot find hl_zip_type")?;
-            if hl_zip_type != 0 {
+            if hl_zip_type != 0 && hl_zip_type != 1 {
                 Err("Unsupported compression method. Only deflate is supported.".into())
             } else {
                 Ok(Self {

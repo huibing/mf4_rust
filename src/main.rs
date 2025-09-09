@@ -80,4 +80,13 @@ pub mod test {
         //println!("{:?}", master);
         println!("2 Time elapsed: {:?} master data", start.elapsed());
     }
+
+    #[rstest]
+    fn mf4_wrapper_test3() {
+        let mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from(r"E:\workspace\vm\vbox-share\Logging2025-09-09_09-28-25.mf4"), None).unwrap();
+        let channel_names = mf4.get_channel_names();
+        //println!("{:?}", channel_names);
+        let data = mf4.get_channel_data("MTRML_stAdjErrstsToAs").unwrap();
+        println!("data: {}", data);
+    }
 }
