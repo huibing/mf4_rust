@@ -72,9 +72,11 @@ pub mod test {
     fn mf4_wrapper_test2() {
         let mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from(r"D:\ETASData\INCA7.2\Measure\jingtai 17-07-2025 03_40_33 PM.mf4"), None).unwrap();
         let start = Instant::now();
-        let channel_name = "IVE_BdyVZRear";
-        let _ = mf4.get_channel_data(channel_name).unwrap();
-        //println!("{:?}", channel_data);
+        let channel_name = "SLC_LC_stTarLvl";
+        let channel_data = mf4.get_channel_data(channel_name).unwrap();
+        println!("Data: {}", channel_data);
+        let raw_data = mf4.get_channel_raw_data(channel_name).unwrap();
+        println!("Raw data: {}", raw_data);
         println!("1 Time elapsed: {:?} channel data", start.elapsed());
         let _ = mf4.get_channel_master_data(channel_name).unwrap();
         //println!("{:?}", master);
@@ -83,10 +85,12 @@ pub mod test {
 
     #[rstest]
     fn mf4_wrapper_test3() {
+        let now = Instant::now();
         let mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from(r"E:\workspace\vm\vbox-share\Logging2025-09-09_09-28-25.mf4"), None).unwrap();
-        let channel_names = mf4.get_channel_names();
+        println!("Time elapsed: {:?} mf4", now.elapsed());
+        let _channel_names = mf4.get_channel_names();
         //println!("{:?}", channel_names);
-        let data = mf4.get_channel_data("MTRML_stAdjErrstsToAs").unwrap();
+        let data = mf4.get_channel_data("SLC_LC_lenPosnCmpdFL_mm").unwrap();
         println!("data: {}", data);
     }
 }
