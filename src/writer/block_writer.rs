@@ -480,10 +480,11 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
     pub fn align_to_8(&mut self) -> WriteResult<u64> {
         let remainder = self.current_offset % 8;
         if remainder != 0 {
-            let padding = 8 - remainder;
-            let zeros = vec![0u8; padding as usize];
-            self.writer.write_all(&zeros)?;
-            self.current_offset += padding;
+            let padding = (8 - remainder) as usize;
+            // Use stack-allocated array for small padding (max 7 bytes)
+            const ZEROS: [u8; 7] = [0u8; 7];
+            self.writer.write_all(&ZEROS[..padding])?;
+            self.current_offset += padding as u64;
         }
         Ok(self.current_offset)
     }

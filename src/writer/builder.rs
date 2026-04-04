@@ -973,38 +973,50 @@ impl Mf4Builder {
         for (dg_idx, _dg) in self.data_groups.iter().enumerate() {
             writer.seek(SeekFrom::Start(data_offsets[dg_idx]))?;
 
-            // Collect all channel data for this DG
-            let mut all_data: Vec<u8> = Vec::new();
             let cg = &self.data_groups[dg_idx].channel_groups[0];
 
-            // Get cycle count from first channel
+            // Calculate record size and cycle count upfront
+            let mut record_size: usize = 0;
+            let master_byte_size = cg.master.as_ref().map(|m| ((m.bit_count + 7) / 8) as usize).unwrap_or(0);
+            record_size += master_byte_size;
+            let channel_byte_sizes: Vec<usize> = cg.channels.iter().map(|ch| {
+                let size = ((ch.bit_count + 7) / 8) as usize;
+                record_size += size;
+                size
+            }).collect();
+
             let cycle_count = if let Some(ref master) = cg.master {
-                self.channel_data.get(&master.name).map(|d| d.len()).unwrap_or(0)
+                self.channel_data.get(&master.name).map(|d| d.len() / master_byte_size).unwrap_or(0)
             } else if !cg.channels.is_empty() {
-                self.channel_data.get(&cg.channels[0].name).map(|d| d.len()).unwrap_or(0)
+                self.channel_data.get(&cg.channels[0].name).map(|d| d.len() / channel_byte_sizes[0]).unwrap_or(0)
             } else {
                 0
             };
+
+            // Pre-allocate the data buffer
+            let total_size = cycle_count * record_size;
+            let mut all_data: Vec<u8> = Vec::with_capacity(total_size);
 
             // Interleave data from all channels
             for cycle in 0..cycle_count {
                 // Master channel first
                 if let Some(ref master) = cg.master {
                     if let Some(data) = self.channel_data.get(&master.name) {
-                        let byte_size = ((master.bit_count + 7) / 8) as usize;
-                        let start = cycle * byte_size;
-                        if start + byte_size <= data.len() {
-                            all_data.extend_from_slice(&data[start..start + byte_size]);
+                        let start = cycle * master_byte_size;
+                        let end = start + master_byte_size;
+                        if end <= data.len() {
+                            all_data.extend_from_slice(&data[start..end]);
                         }
                     }
                 }
                 // Then regular channels
-                for ch in &cg.channels {
+                for (ch_idx, ch) in cg.channels.iter().enumerate() {
                     if let Some(data) = self.channel_data.get(&ch.name) {
-                        let byte_size = ((ch.bit_count + 7) / 8) as usize;
+                        let byte_size = channel_byte_sizes[ch_idx];
                         let start = cycle * byte_size;
-                        if start + byte_size <= data.len() {
-                            all_data.extend_from_slice(&data[start..start + byte_size]);
+                        let end = start + byte_size;
+                        if end <= data.len() {
+                            all_data.extend_from_slice(&data[start..end]);
                         }
                     }
                 }
@@ -1188,13 +1200,6 @@ impl Mf4Builder {
     }
 
     fn write_tx_block_raw<W: Write + Seek>(&self, writer: &mut W, text: &str) -> WriteResult<()> {
-        // TX block structure:
-        // - Block ID: "##TX" (4 bytes)
-        // - Reserved: 4 bytes
-        // - Block length: 8 bytes
-        // - Link count: 8 bytes (0 for TX)
-        // - Text data: null-terminated, padded to 8-byte alignment
-
         let text_bytes = text.as_bytes();
         let text_len = text_bytes.len() + 1; // Include null terminator
         let padded_len = (text_len + 7) & !7; // Pad to 8-byte boundary
@@ -1209,10 +1214,11 @@ impl Mf4Builder {
         writer.write_all(text_bytes)?;
         writer.write_all(&[0u8])?;  // Null terminator
 
-        // Padding
+        // Padding (max 7 bytes)
         let padding = padded_len - text_len;
         if padding > 0 {
-            writer.write_all(&vec![0u8; padding])?;
+            const ZEROS: [u8; 7] = [0u8; 7];
+            writer.write_all(&ZEROS[..padding])?;
         }
 
         Ok(())
@@ -1300,35 +1306,6 @@ pub trait ChannelData: Sized + Clone + 'static {
 
     /// Get the default bit count for this type
     fn default_bit_count() -> u32;
-}
-
-/// Helper to serialize numeric values based on data type
-fn serialize_numeric<T, F>(
-    data: &[T],
-    data_type: u8,
-    bit_count: u32,
-    write_le: F,
-) -> WriteResult<Vec<u8>>
-where
-    F: Fn(&mut Vec<u8>, &T),
-{
-    // Validate bit count matches expected size
-    let expected_bits = std::mem::size_of::<T>() as u32 * 8;
-    if bit_count != expected_bits {
-        return Err(WriteError::InvalidChannelConfig(format!(
-            "Bit count {} does not match expected {} for this data type",
-            bit_count, expected_bits
-        )));
-    }
-
-    // For LE types (0, 2, 4) and BE types (1, 3, 5)
-    let mut result = Vec::with_capacity(data.len() * (bit_count as usize / 8));
-
-    for value in data {
-        write_le(&mut result, value);
-    }
-
-    Ok(result)
 }
 
 impl ChannelData for f64 {
