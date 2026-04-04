@@ -1,6 +1,8 @@
 pub mod components;
 pub mod data_serde;
 
+#[cfg(feature = "write")]
+pub mod writer;
 
 pub use crate::parser::Mf4Wrapper;
 pub use crate::data_serde::DataValue;
@@ -720,6 +722,10 @@ pub mod parser {
             self.mdfinfo.date_time.to_owned()
         }
 
+        pub fn get_time_stamp_ns(&self) -> u64 {
+            self.mdfinfo.time_stamp
+        }
+
         pub fn nth_dg(&self, index: usize) -> Option<&DataGroup> {
             self.data.get(index)
         }
@@ -840,7 +846,11 @@ pub mod parser {
         pub fn get_time_stamp(&self) -> String {
             self.mdf.get_time_stamp()
         }
-        
+
+        pub fn get_time_stamp_ns(&self) -> u64 {
+            self.mdf.get_time_stamp_ns()
+        }
+
         pub fn is_sorted(&self) -> bool {
             self.mdf.data.iter().all(|dg| dg.is_sorted())
         }

@@ -226,7 +226,7 @@ pub mod conversion {
                 },
                 CcType::TableInt((index, value)) => {
                     let mut right_ind: usize = 0;
-                    while inp >= index[right_ind] && right_ind < index.len() {
+                    while right_ind < index.len() && inp >= index[right_ind] {
                         right_ind += 1;
                     };
                     if right_ind == 0 {

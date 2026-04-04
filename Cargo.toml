@@ -41,5 +41,12 @@ memmap2 = "0.9.7"
 flate2 = { version = "1.0.17", features = ["rust_backend"], default-features = false }
 getrandom = { version = "0.2", features = ["js"] }
 
+[features]
+default = ["read"]
+read = []
+write = []
+compression = ["write"]  # flate2 is already a required dependency for reading
+streaming = ["write"]
+
 [profile.release]
 debug = true

@@ -307,6 +307,34 @@ impl DataValue {
             _ => false
         }
     }
+
+    /// Returns the number of elements in the data
+    pub fn len(&self) -> usize {
+        match self {
+            DataValue::CHAR(_) => 1,
+            DataValue::STRINGS(v) => v.len(),
+            DataValue::BYTE(v) => v.len(),
+            DataValue::UINT64(v) => v.len(),
+            DataValue::UINT8(v) => v.len(),
+            DataValue::INT8(v) => v.len(),
+            DataValue::INT16(v) => v.len(),
+            DataValue::UINT16(v) => v.len(),
+            DataValue::INT32(v) => v.len(),
+            DataValue::UINT32(v) => v.len(),
+            DataValue::INT64(v) => v.len(),
+            DataValue::REAL(v) => v.len(),
+            DataValue::SINGLE(v) => v.len(),
+            DataValue::FLOAT16(v) => v.len(),
+            DataValue::STRUCT(m) => m.len(),
+            DataValue::BYTEARRAY(v) => v.len(),
+            DataValue::MIXED(v) => v.len(),
+        }
+    }
+
+    /// Returns true if the data is empty
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 macro_rules! fmt_vec_branch {
