@@ -153,8 +153,10 @@ impl CompressionConfig {
 
 /// Conversion parameters for channel data transformation
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum ConversionParams {
     /// No conversion (1:1)
+    #[default]
     OneToOne,
     /// Linear conversion: y = p1 + p2 * x
     Linear { p1: f64, p2: f64 },
@@ -180,11 +182,6 @@ pub enum ConversionParams {
     },
 }
 
-impl Default for ConversionParams {
-    fn default() -> Self {
-        Self::OneToOne
-    }
-}
 
 /// Builder for conversion rules
 #[derive(Debug, Clone)]
@@ -283,8 +280,10 @@ impl ConversionBuilder {
 
 /// Sync type for channel
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum SyncType {
     /// No synchronization
+    #[default]
     None = 0,
     /// Time synchronization
     Time = 1,
@@ -296,16 +295,13 @@ pub enum SyncType {
     Index = 4,
 }
 
-impl Default for SyncType {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 /// Channel type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ChannelType {
     /// Fixed length data channel
+    #[default]
     FixedLength = 0,
     /// Variable length data channel (VLSD)
     VariableLength = 1,
@@ -315,11 +311,6 @@ pub enum ChannelType {
     VirtualMaster = 3,
 }
 
-impl Default for ChannelType {
-    fn default() -> Self {
-        Self::FixedLength
-    }
-}
 
 /// Builder for a channel definition
 #[derive(Debug, Clone)]
@@ -776,7 +767,7 @@ impl Mf4Builder {
         let mut data_offsets: Vec<u64> = Vec::new();
 
         // First pass: calculate sizes and reserve space
-        for (_dg_idx, dg) in self.data_groups.iter().enumerate() {
+        for dg in self.data_groups.iter() {
             // Align and record DG offset
             current_offset = (current_offset + 7) & !7;
             dg_offsets.push(current_offset);
@@ -785,7 +776,7 @@ impl Mf4Builder {
             let mut cg_offs = Vec::new();
             let mut cn_offs = Vec::new();
 
-            for (_cg_idx, cg) in dg.channel_groups.iter().enumerate() {
+            for cg in dg.channel_groups.iter() {
                 // Align and record CG offset
                 current_offset = (current_offset + 7) & !7;
                 cg_offs.push(current_offset);
@@ -857,23 +848,23 @@ impl Mf4Builder {
                 let mut record_size: u32 = 0;
 
                 if let Some(ref master) = cg.master {
-                    record_size += (master.bit_count + 7) / 8;
+                    record_size += master.bit_count.div_ceil(8);
                 }
                 for ch in &cg.channels {
-                    record_size += (ch.bit_count + 7) / 8;
+                    record_size += ch.bit_count.div_ceil(8);
                 }
 
                 // Get cycle count from data
                 // Each channel stores its own data independently, so we get the element count
                 // from the master channel (or first channel) based on its byte size
                 let cycle_count = if let Some(ref master) = cg.master {
-                    let master_byte_size = ((master.bit_count + 7) / 8) as u64;
+                    let master_byte_size = master.bit_count.div_ceil(8) as u64;
                     self.channel_data.get(&master.name)
                         .map(|d| d.len() as u64 / master_byte_size)
                         .unwrap_or(0)
                 } else if !cg.channels.is_empty() {
                     let first_ch = &cg.channels[0];
-                    let first_byte_size = ((first_ch.bit_count + 7) / 8) as u64;
+                    let first_byte_size = first_ch.bit_count.div_ceil(8) as u64;
                     self.channel_data.get(&first_ch.name)
                         .map(|d| d.len() as u64 / first_byte_size)
                         .unwrap_or(0)
@@ -940,7 +931,7 @@ impl Mf4Builder {
 
                     // Calculate byte offset
                     let byte_offset: u32 = if let Some(ref master) = cg.master {
-                        (master.bit_count + 7) / 8
+                        master.bit_count.div_ceil(8)
                     } else {
                         0
                     };
@@ -974,10 +965,10 @@ impl Mf4Builder {
 
             // Calculate record size and cycle count upfront
             let mut record_size: usize = 0;
-            let master_byte_size = cg.master.as_ref().map(|m| ((m.bit_count + 7) / 8) as usize).unwrap_or(0);
+            let master_byte_size = cg.master.as_ref().map(|m| m.bit_count.div_ceil(8) as usize).unwrap_or(0);
             record_size += master_byte_size;
             let channel_byte_sizes: Vec<usize> = cg.channels.iter().map(|ch| {
-                let size = ((ch.bit_count + 7) / 8) as usize;
+                let size = ch.bit_count.div_ceil(8) as usize;
                 record_size += size;
                 size
             }).collect();
@@ -1637,7 +1628,7 @@ impl ChannelData for String {
                     result.extend_from_slice(&bytes[..len]);
                     // Pad with null bytes if string is shorter than max_len
                     if len < max_len {
-                        result.extend(std::iter::repeat(0u8).take(max_len - len));
+                        result.extend(std::iter::repeat_n(0u8, max_len - len));
                     }
                 }
                 Ok(result)
@@ -1654,7 +1645,7 @@ impl ChannelData for String {
                     // Pad remaining with null
                     let written = encoded.len().min(max_chars);
                     if written < max_chars {
-                        result.extend(std::iter::repeat(0u8).take((max_chars - written) * 2));
+                        result.extend(std::iter::repeat_n(0u8, (max_chars - written) * 2));
                     }
                 }
                 Ok(result)
@@ -1671,7 +1662,7 @@ impl ChannelData for String {
                     // Pad remaining with null
                     let written = encoded.len().min(max_chars);
                     if written < max_chars {
-                        result.extend(std::iter::repeat(0u8).take((max_chars - written) * 2));
+                        result.extend(std::iter::repeat_n(0u8, (max_chars - written) * 2));
                     }
                 }
                 Ok(result)
@@ -1708,7 +1699,7 @@ impl ChannelData for Vec<u8> {
             result.extend_from_slice(&arr[..len]);
             // Pad with zeros if array is shorter
             if len < array_len {
-                result.extend(std::iter::repeat(0u8).take(array_len - len));
+                result.extend(std::iter::repeat_n(0u8, array_len - len));
             }
         }
 

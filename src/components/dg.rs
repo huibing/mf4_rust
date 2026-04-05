@@ -26,15 +26,15 @@ pub mod datagroup {
 
     impl ChannelLink<'_> {
         pub fn get_channel(&self) -> &Channel {
-            &self.0
+            self.0
         }
 
         pub fn get_channel_group(&self) -> &ChannelGroup {
-            &self.1
+            self.1
         }
 
         pub fn get_data_group(&self) -> &DataGroup {
-            &self.2
+            self.2
         }
 
         pub fn get_master_channel_data(&self, file: &mut Cursor<&[u8]>) -> Result<DataValue, DynError> {
@@ -114,10 +114,7 @@ pub mod datagroup {
                 let cg: ChannelGroup = ChannelGroup::new(buf, link)?; // fails to construct the whole dg if any cg parsing error exists
                 channel_groups.push(cg);
             }
-            let sorted: bool = match channel_groups.len() {
-                0 | 1 => true,
-                _ => false
-            };
+            let sorted: bool = matches!(channel_groups.len(), 0 | 1);
             let mut rec_id_map: HashMap<u64, (u32, u64)> = HashMap::new();
             let mut vlsd_rec_id: HashSet<u64> = HashSet::new();
             channel_groups.iter().for_each(|cg| {
@@ -171,7 +168,7 @@ pub mod datagroup {
                 if !dg.sorted {
                     (rec_id, id_size) = read_rec_id(dg.rec_id_size, &dg.data_block, buf, cur_off)?;
                 } else {
-                    rec_id = dg.channel_groups.get(0).and_then(|cg| Some(cg.get_record_id())).or(Some(0u64)).unwrap();
+                    rec_id = dg.channel_groups.first().map(|cg| cg.get_record_id()).unwrap_or(0u64);
                     id_size = 0u8;
                 }
                 cur_off += id_size as u64;
@@ -204,10 +201,10 @@ pub mod datagroup {
         fn get_rec_id_offset(&self, rec_id: u64, cycle_index: u64) -> Option<u64> {
             if !self.sorted {
                 self.offsets_map.get(&rec_id)
-                                .and_then(|x| x.get(cycle_index as usize).and_then(|y| Some(y.clone())))
+                                .and_then(|x| x.get(cycle_index as usize).copied())
             } else {
                 let bytes_num = self.rec_id_map.get(&rec_id)?.0;
-                Some((cycle_index * bytes_num as u64) as u64)
+                Some(cycle_index * bytes_num as u64)
             }
         }
 

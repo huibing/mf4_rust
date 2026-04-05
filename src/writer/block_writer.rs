@@ -73,6 +73,7 @@ impl Default for IdBlock {
 
 /// HD Block (Header)
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct HdBlock {
     /// Pointer to first DG block
     pub hd_dg_first: u64,
@@ -94,21 +95,6 @@ pub struct HdBlock {
     pub hd_num_time_channels: u32,
 }
 
-impl Default for HdBlock {
-    fn default() -> Self {
-        Self {
-            hd_dg_first: 0,
-            hd_fh_first: 0,
-            hd_md_comment: 0,
-            hd_start_time_ns: 0,
-            hd_tz_offset: 0,
-            hd_dst_offset: 0,
-            hd_time_flags: 0,
-            hd_time_quality: 0,
-            hd_num_time_channels: 0,
-        }
-    }
-}
 
 // ============================================================================
 // DG Block
@@ -116,6 +102,7 @@ impl Default for HdBlock {
 
 /// DG Block (Data Group)
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct DgBlock {
     /// Pointer to next DG block
     pub dg_dg_next: u64,
@@ -129,17 +116,6 @@ pub struct DgBlock {
     pub dg_rec_id_size: u8,
 }
 
-impl Default for DgBlock {
-    fn default() -> Self {
-        Self {
-            dg_dg_next: 0,
-            dg_cg_first: 0,
-            dg_data: 0,
-            dg_md_comment: 0,
-            dg_rec_id_size: 0,
-        }
-    }
-}
 
 // ============================================================================
 // CG Block
@@ -147,6 +123,7 @@ impl Default for DgBlock {
 
 /// CG Block (Channel Group)
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct CgBlock {
     /// Pointer to next CG block
     pub cg_cg_next: u64,
@@ -174,24 +151,6 @@ pub struct CgBlock {
     pub cg_samples: u32,
 }
 
-impl Default for CgBlock {
-    fn default() -> Self {
-        Self {
-            cg_cg_next: 0,
-            cg_cn_first: 0,
-            cg_tx_acq_name: 0,
-            cg_si_acq_source: 0,
-            cg_md_comment: 0,
-            cg_record_id: 0,
-            cg_cycle_count: 0,
-            cg_data_bytes: 0,
-            cg_inval_bytes: 0,
-            cg_flags: 0,
-            cg_path_separator: 0,
-            cg_samples: 0,
-        }
-    }
-}
 
 // ============================================================================
 // CN Block
@@ -404,6 +363,7 @@ impl CcBlock {
 
 /// SI Block (Source information for channels and channel groups)
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct SiBlock {
     /// Pointer to name TX block
     pub si_tx_name: u64,
@@ -419,18 +379,6 @@ pub struct SiBlock {
     pub si_flags: u8,
 }
 
-impl Default for SiBlock {
-    fn default() -> Self {
-        Self {
-            si_tx_name: 0,
-            si_tx_path: 0,
-            si_md_comment: 0,
-            si_type: 0,
-            si_bus_type: 0,
-            si_flags: 0,
-        }
-    }
-}
 
 impl SiBlock {
     /// Create a new SI block
@@ -876,7 +824,7 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
         // Reserved (4 bytes)
         self.writer.write_all(&[0u8; 4])?;
         // Block length
-        self.writer.write_all(&(block_len as u64).to_le_bytes())?;
+        self.writer.write_all(&block_len.to_le_bytes())?;
         // Link count
         self.writer.write_all(&link_count.to_le_bytes())?;
 

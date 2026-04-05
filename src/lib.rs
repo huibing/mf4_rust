@@ -64,12 +64,10 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
             let size:usize = self.size.unwrap_or(1).try_into().unwrap();  // convert to usize for later convience
             match self.data_type {
                 DataType::CHAR => {
-                    let size:usize;
-                    if self.size.is_none() {
-                        size = cur.get_ref().len() - cur.position() as usize;
-                    } else {
-                        size = self.size.unwrap() as usize;
-                    }
+                    let size:usize = match self.size {
+                        None => cur.get_ref().len() - cur.position() as usize,
+                        Some(s) => s as usize,
+                    };
                     let mut byte_buf: Vec<u8> = vec![0u8;size];
                     cur.read_exact(&mut byte_buf)?;
                     Ok(DataValue::CHAR(String::from_utf8(byte_buf)?))   // might be wrong, asam manual says that CHAR data is encoded in ISO-8859-1
@@ -86,14 +84,13 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 },
                 DataType::UINT64 => {
                     let mut res: Vec<u64> = Vec::new();
-                    let size:usize;    // to handle variable size
-                    if self.size.is_none() {
-                        size = (cur.get_ref().len() - cur.position() as usize)/8;
-                    } else {
-                        size = self.size.unwrap() as usize;
-                    }
+                    // to handle variable size
+                    let size:usize = match self.size {
+                        None => (cur.get_ref().len() - cur.position() as usize)/8,
+                        Some(s) => s as usize,
+                    };
                     let mut eight_bytes_buf: [u8; 8] = [0u8;8];
-                    (0..size).into_iter().for_each(|_| {
+                    (0..size).for_each(|_| {
                         cur.read_exact(&mut eight_bytes_buf).unwrap();
                         res.push(LittleEndian::read_u64(&eight_bytes_buf));
                     });
@@ -102,7 +99,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 DataType::INT16 => {
                     let mut res: Vec<i16> = Vec::new();
                     let mut two_byte_buf: [u8; 2] = [0u8;2];
-                    (0..size).into_iter().for_each(|_| {
+                    (0..size).for_each(|_| {
                         cur.read_exact(&mut two_byte_buf).unwrap();
                         res.push(LittleEndian::read_i16(&two_byte_buf));
                     });
@@ -111,7 +108,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 DataType::UINT16 => {
                     let mut res: Vec<u16> = Vec::new();
                     let mut two_byte_buf = [0u8;2];
-                    (0..size).into_iter().for_each(|_| {
+                    (0..size).for_each(|_| {
                         cur.read_exact(&mut two_byte_buf).unwrap();
                         res.push(LittleEndian::read_u16(&two_byte_buf));
                     });
@@ -120,7 +117,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 DataType::INT32 => {
                     let mut res: Vec<i32> = Vec::new();
                     let mut buf: [u8; 4] = [0u8;4];
-                    (0..size).into_iter().for_each(|_| {
+                    (0..size).for_each(|_| {
                         cur.read_exact(&mut buf).unwrap();
                         res.push(LittleEndian::read_i32(&buf));
                     });
@@ -129,7 +126,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 DataType::UINT32 => {
                     let mut res: Vec<u32> = Vec::new();
                     let mut buf: [u8; 4] = [0u8;4];
-                    (0..size).into_iter().for_each(|_| {
+                    (0..size).for_each(|_| {
                         cur.read_exact(&mut buf).unwrap();
                         res.push(LittleEndian::read_u32(&buf));
                     });
@@ -138,7 +135,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 DataType::INT64 => {
                     let mut res: Vec<i64> = Vec::new();
                     let mut buf: [u8; 8] = [0u8;8];
-                    (0..size).into_iter().for_each(|_| {
+                    (0..size).for_each(|_| {
                         cur.read_exact(&mut buf).unwrap();
                         res.push(LittleEndian::read_i64(&buf));
                     });
@@ -147,7 +144,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 DataType::REAL => {
                     let mut res: Vec<f64> = Vec::new();
                     let mut buf: [u8; 8] = [0u8;8];
-                    (0..size).into_iter().for_each(|_| {
+                    (0..size).for_each(|_| {
                         cur.read_exact(&mut buf).unwrap();
                         res.push(LittleEndian::read_f64(&buf));
                     });
@@ -246,7 +243,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
             buf.read_exact(&mut id_buf).unwrap();
             if !self.check_id(&id_buf) {
                 //println!("Invalid block id");     // TODO: debug info  put into logger
-                return Err("Invalid block id".into());
+                Err("Invalid block id".into())
             } else {
                 let mut blk_info: BlockInfo = BlockInfo {
                     links: Vec::new(),
@@ -281,7 +278,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
                 }
                 let mut left_bytes: Vec<u8> = Vec::new();
                 cur.read_to_end(&mut left_bytes).unwrap();
-                if left_bytes.len() > 0 {
+                if !left_bytes.is_empty() {
                     blk_info.data.insert("unparsed_data".to_string(), DataValue::BYTE(left_bytes));
                 }
                 blk_info.map_links().unwrap_or_else(|e| {
@@ -417,7 +414,7 @@ pub mod block {  // utility struct and functions for parsing mdf block link and 
             Some(self.link_map.get(&link_name.to_string())?.clone().try_into().unwrap())
         }
         pub fn get_data_value(&self, data_name: &str) -> Option<&DataValue> {
-            Some(self.data.get(data_name)?)
+            self.data.get(data_name)
         }
         pub fn retrieve_data_value(&mut self, data_name: &str) -> Option<DataValue> {
             self.data.swap_remove(data_name)
@@ -532,7 +529,7 @@ pub mod parser {
         DESC_MAP.get(&name)
     }
 
-    pub fn get_block_desc<'a>(file: &'a mut Cursor<&[u8]>, offset: u64) -> Result<&'static BlockDesc, DynError>{
+    pub fn get_block_desc(file: &mut Cursor<&[u8]>, offset: u64) -> Result<&'static BlockDesc, DynError>{
         //use file offset to acquire the actual block type and its block desc
         if offset == 0 {
             return Err("Invalid offset".into());
@@ -552,7 +549,7 @@ pub mod parser {
         Ok(toml::from_str(std::str::from_utf8(toml_file.data.as_ref())?)?)
     }
     
-    pub fn get_child_info<'a>(file: &mut Cursor<&[u8]>, first_child_offset: u64, block_type: &'static str) 
+    pub fn get_child_info(file: &mut Cursor<&[u8]>, first_child_offset: u64, block_type: &'static str)
         -> Result<Vec<BlockInfo>, DynError> {
         let mut link_list: Vec<BlockInfo> = Vec::new();
         let blk_str: String = block_type.to_lowercase();
@@ -575,7 +572,7 @@ pub mod parser {
         Ok(link_list)
     }
 
-    pub fn get_child_links<'a>(file: &mut Cursor<&[u8]>, first_child_offset: u64, block_type: &'static str) 
+    pub fn get_child_links(file: &mut Cursor<&[u8]>, first_child_offset: u64, block_type: &'static str)
         -> Result<Vec<u64>, DynError> {
         let mut link_list: Vec<u64> = Vec::new();
         let blk_str: String = block_type.to_lowercase();
@@ -630,7 +627,7 @@ pub mod parser {
     }
 
     pub fn peek_block_type(file: &mut Cursor<&[u8]>, offset: u64) -> Result<String, DynError> {
-        if offset == 0 || offset % 8 != 0 {
+        if offset == 0 || !offset.is_multiple_of(8) {
             Err("Invalid block start offset".into())
         } else {
             let mut buf: [u8; 4] = [0u8;4];
@@ -670,8 +667,8 @@ pub mod parser {
                     data.push(dg);
                     dg_count += 1;
                     let progress = dg_count as f64/total_len as f64 * 100.0;
-                    if app.is_some() {
-                        app.unwrap()(progress);
+                    if let Some(callback) = app {
+                        callback(progress);
                     } else {
                         println!("total process: {}", progress);
                     }
@@ -699,15 +696,15 @@ pub mod parser {
         pub fn check_duplicate_channel(&self) -> Option<Vec<String>> { // for debug purpose
             let mut dup_channel_list: Vec<String> = Vec::new();
             let v:Vec<Vec<String>> = self.data.iter().map(|dg| dg.get_all_channel_names()).collect();
-            for i in 0..v.len(){
-                let v1: HashSet<&String> = v[i].iter().collect::<HashSet<&String>>();
-                for j in i+1..v.len() {
-                    let v2: HashSet<&String> = v[j].iter().collect::<HashSet<&String>>();
+            for (i, v1_vec) in v.iter().enumerate() {
+                let v1: HashSet<&String> = v1_vec.iter().collect::<HashSet<&String>>();
+                for v2_vec in v.iter().skip(i + 1) {
+                    let v2: HashSet<&String> = v2_vec.iter().collect::<HashSet<&String>>();
                     let common: Vec<String> = v1.intersection(&v2).cloned().cloned().collect();
                     dup_channel_list.extend(common);
                 }
             }
-            if dup_channel_list.len() > 0 {
+            if !dup_channel_list.is_empty() {
                 Some(dup_channel_list)
             } else {
                 None
@@ -826,7 +823,7 @@ pub mod parser {
             let mut master_cache = self.master_cache.borrow_mut();
             if master_cache.contains(&(*dg_index, *cg_index)) {
                 let d = master_cache.get(&(*dg_index, *cg_index)); // get the data from the master cache
-                d.map(|d| d.clone())
+                d.cloned()
             } else {
                 let dg: &DataGroup = self.mdf.nth_dg(*dg_index)?;
                 let cg: &ChannelGroup = dg.nth_cg(*cg_index)?;

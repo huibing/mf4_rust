@@ -25,19 +25,19 @@ impl FromBeBytes for u8 {
 
 impl FromBeBytes for u16 {
     fn from_be_bytes(buf: &[u8]) -> Self{
-        BigEndian::read_u16(&buf)
+        BigEndian::read_u16(buf)
     }
 }
 
 impl FromBeBytes for u32 {
     fn from_be_bytes(buf: &[u8]) -> Self{
-        BigEndian::read_u32(&buf)
+        BigEndian::read_u32(buf)
     }
 }
 
 impl FromBeBytes for u64 {
     fn from_be_bytes(buf: &[u8]) -> Self{
-        BigEndian::read_u64(&buf)
+        BigEndian::read_u64(buf)
     }
 }
 
@@ -49,19 +49,19 @@ impl FromBeBytes for i8 {
 
 impl FromBeBytes for i16 {
     fn from_be_bytes(buf: &[u8]) -> Self{
-        BigEndian::read_i16(&buf)
+        BigEndian::read_i16(buf)
     }
 }
 
 impl FromBeBytes for i32 {
     fn from_be_bytes(buf: &[u8]) -> Self{
-        BigEndian::read_i32(&buf)
+        BigEndian::read_i32(buf)
     }
 }
 
 impl FromBeBytes for i64 {
     fn from_be_bytes(buf: &[u8]) -> Self{
-        BigEndian::read_i64(&buf)
+        BigEndian::read_i64(buf)
     }
 }
 
@@ -73,13 +73,13 @@ impl FromBeBytes for f16 {
 
 impl FromBeBytes for f32 {
     fn from_be_bytes(buf: &[u8]) -> Self {
-        BigEndian::read_f32(&buf)
+        BigEndian::read_f32(buf)
     }
 }
 
 impl FromBeBytes for f64 {
     fn from_be_bytes(buf: &[u8]) -> Self {
-        BigEndian::read_f64(&buf)
+        BigEndian::read_f64(buf)
     }
 }
 
@@ -111,19 +111,19 @@ impl FromLeBytes for u8 {
 
 impl FromLeBytes for u16 {
     fn from_le_bytes(buf: &[u8]) -> Self{
-        LittleEndian::read_u16(&buf)
+        LittleEndian::read_u16(buf)
     }
 }
 
 impl FromLeBytes for u32 {
     fn from_le_bytes(buf: &[u8]) -> Self{
-        LittleEndian::read_u32(&buf)
+        LittleEndian::read_u32(buf)
     }
 }
 
 impl FromLeBytes for u64 {
     fn from_le_bytes(buf: &[u8]) -> Self{
-        LittleEndian::read_u64(&buf)
+        LittleEndian::read_u64(buf)
     }
 }
 
@@ -135,19 +135,19 @@ impl FromLeBytes for i8 {
 
 impl FromLeBytes for i16 {
     fn from_le_bytes(buf: &[u8]) -> Self{
-        LittleEndian::read_i16(&buf)
+        LittleEndian::read_i16(buf)
     }
 }
 
 impl FromLeBytes for i32 {
     fn from_le_bytes(buf: &[u8]) -> Self{
-        LittleEndian::read_i32(&buf)
+        LittleEndian::read_i32(buf)
     }
 }
 
 impl FromLeBytes for i64 {
     fn from_le_bytes(buf: &[u8]) -> Self{
-        LittleEndian::read_i64(&buf)
+        LittleEndian::read_i64(buf)
     }
 }
 
@@ -159,13 +159,13 @@ impl FromLeBytes for f16 {
 
 impl FromLeBytes for f32 {
     fn from_le_bytes(buf: &[u8]) -> Self {
-        LittleEndian::read_f32(&buf)
+        LittleEndian::read_f32(buf)
     }
 }
 
 impl FromLeBytes for f64 {
     fn from_le_bytes(buf: &[u8]) -> Self {
-        LittleEndian::read_f64(&buf)
+        LittleEndian::read_f64(buf)
     }
 }
 
@@ -197,9 +197,9 @@ pub fn parse_be_value<T>(cur: &[u8]) -> T
         T::from_be_bytes(cur)
     }
 
-pub fn right_shift_bytes_inplace(bytes: &mut Vec<u8>, shift: usize) -> Result<(), &str> {
-    if shift > 7 || shift < 1 {
-        return Err("Shift must be between 1 and 7");
+pub fn right_shift_bytes_inplace(bytes: &mut [u8], shift: usize) -> Result<(), &str> {
+    if !(1..=7).contains(&shift) {
+        Err("Shift must be between 1 and 7")
     } else {
         let mut carry = 0u8;
         for byte in bytes.iter_mut().rev() {
@@ -211,8 +211,8 @@ pub fn right_shift_bytes_inplace(bytes: &mut Vec<u8>, shift: usize) -> Result<()
     }
 }
 
-pub fn right_shift_bytes(bytes: &Vec<u8>, shift: u8) -> Result<Vec<u8>, &str> {
-    if shift>7 || shift < 1 {
+pub fn right_shift_bytes(bytes: &[u8], shift: u8) -> Result<Vec<u8>, &str> {
+    if !(1..=7).contains(&shift) {
         return Err("Shift must be between 1 and 7");
     }
     let mut new = Vec::new();
@@ -225,12 +225,12 @@ pub fn right_shift_bytes(bytes: &Vec<u8>, shift: u8) -> Result<Vec<u8>, &str> {
     Ok(new)
 }
 
-pub fn bytes_and_bits(bytes: &mut Vec<u8>, bits: u32) {
+pub fn bytes_and_bits(bytes: &mut [u8], bits: u32) {
     // modify in place; this operation can not fail
     let num_of_bytes = (bits as f32 / 8.0).floor() as usize;
     let num_of_bits = bits % 8;
     if num_of_bytes < bytes.len() {
-        bytes[num_of_bytes] = bytes[num_of_bytes] & (2_u8.pow(num_of_bits as u32) - 1);
+        bytes[num_of_bytes] &= 2_u8.pow(num_of_bits) - 1 ;
         (num_of_bytes + 1..bytes.len()).for_each(|i| bytes[i] = 0);
     } //  nothing needs to be done if bits is larger than the bytes array
 }
@@ -245,8 +245,8 @@ pub fn reverse_bytes_array(arr: &mut [u8]) {
     }
 }
 
-fn from_u8_vec(bytes: &Vec<u8>) -> Result<Vec<u16>, &'static str> {
-    if bytes.len() % 2 != 0 {
+fn from_u8_vec(bytes: &[u8]) -> Result<Vec<u16>, &'static str> {
+    if !bytes.len().is_multiple_of(2) {
         return Err("Length of bytes must be even");
     }
     let result: Vec<u16> = bytes.chunks(2)
@@ -295,17 +295,11 @@ pub enum DataValue {
 
 impl DataValue {
     pub fn is_num(&self) -> bool {
-        match self {
-            &DataValue::CHAR(_) | &DataValue::STRINGS(_) | &DataValue::BYTEARRAY(_) | &DataValue::STRUCT(_) | &DataValue::MIXED(_)=> false,
-            _ => true
-        }
+        !matches!(self, &DataValue::CHAR(_) | &DataValue::STRINGS(_) | &DataValue::BYTEARRAY(_) | &DataValue::STRUCT(_) | &DataValue::MIXED(_))
     }
 
     pub fn is_strings(&self) -> bool {
-        match self {
-            &DataValue::STRINGS(_) => true,
-            _ => false
-        }
+        matches!(self, &DataValue::STRINGS(_))
     }
 
     /// Returns the number of elements in the data
@@ -344,7 +338,7 @@ macro_rules! fmt_vec_branch {
     }};
 }
 
-fn fmt_vec<T: fmt::Display>(f: &mut fmt::Formatter<'_>, v: &Vec<T>) -> fmt::Result {
+fn fmt_vec<T: fmt::Display>(f: &mut fmt::Formatter<'_>, v: &[T]) -> fmt::Result {
     let n = v.len();
     if n == 0 {
         return write!(f, "[]");
@@ -360,11 +354,11 @@ fn fmt_vec<T: fmt::Display>(f: &mut fmt::Formatter<'_>, v: &Vec<T>) -> fmt::Resu
         write!(f, "]")
     } else {
         write!(f, "[")?;
-        for i in 0..10 {
+        for (i, item) in v.iter().enumerate().take(10) {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", v[i])?;
+            write!(f, "{}", item)?;
         }
         write!(f, ", ..., {}", v[n - 1])?;
         write!(f, "] (len={})", n)

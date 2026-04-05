@@ -101,7 +101,7 @@ pub mod dataxxx {
                 let mut ori_data: Vec<u8> = Vec::new();
                 decoder.read_to_end(&mut ori_data)?;
                 if zip_type == 1 {
-                    ori_data = transpose(&mut ori_data, orig_col_num as usize, ori_data_len as usize);
+                    ori_data = transpose(&ori_data, orig_col_num as usize, ori_data_len as usize);
                 }
                 if ori_data.len() as u64 != ori_data_len {
                     Err(format!("Invalid de-compressed data length for dz block at {}", offset).into())
@@ -196,7 +196,7 @@ pub mod dataxxx {
         buf.read_exact(&mut buffer)?;
 
         if String::from_utf8(buffer.to_vec()).unwrap() != "##DL"{
-            return Err("Invalid DL block".into());
+            Err("Invalid DL block".into())
         } else {
             buf.seek(SeekFrom::Current(4))?; // skip 4 reserved bytes
             let mut eight_bytes = [0u8; 8];
@@ -291,9 +291,7 @@ pub mod dataxxx {
             let num_of_blocks = dl_blocks.iter()
                         .fold(0, |acc, x| acc + x.dl_count as u64);
             let start_offsets_in_file = dl_blocks.iter().flat_map(|x| {
-                x.dl_data.iter().map(|y| {
-                    *y
-                })
+                x.dl_data.iter().copied()
             }).collect();
             let mut data_blocks: Vec<Box<dyn VirtualBuf>> = Vec::with_capacity(num_of_blocks as usize);
             for dl_block in dl_blocks.iter() {
@@ -327,9 +325,7 @@ pub mod dataxxx {
                 } else {
                     let offs:Vec<u64> = dl_blocks.iter().flat_map(|x| {
                         let v = x.dl_offset.as_ref().unwrap();
-                        v.iter().map(|y| {
-                            y.clone()
-                        })
+                        v.iter().copied()
                     }).collect();
                     for (left, right) in offs.iter().zip(virtual_offsets.iter()) {
                         if left != right {
@@ -370,7 +366,7 @@ pub mod dataxxx {
         -> Result<(), DynError> {
             let end_index = virtual_offset + buf.len() as u64;
             if end_index > self.total_len {
-                return Err("Virtual offset out of range.".into());
+                Err("Virtual offset out of range.".into())
             } else {
                 let start_block_id: usize = {    // does not need to be atomic; 
                     // also binary search is not needed because when reading a block, it is read sequentially
@@ -428,7 +424,7 @@ pub mod dataxxx {
         fn get_data_ref<'a>(&'a self, from: &'a mut Cursor<&[u8]>, virtual_offset:u64, len: usize) -> Result<Cow<'a, [u8]>, DynError> {
             let end_index = virtual_offset + len as u64;
             if end_index > self.total_len {
-                return Err("Virtual offset out of range.".into());
+                Err("Virtual offset out of range.".into())
             } else {
                 let start_block_id: usize = {    // does not need to be atomic; 
                     // also binary search is not needed because when reading a block, it is read sequentially

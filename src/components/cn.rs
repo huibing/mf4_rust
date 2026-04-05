@@ -152,10 +152,7 @@ pub mod channel {
             if self.cn_type == 1u8 {
                 if self.cn_data != 0x00u64 {
                     let block_type: String = peek_block_type(buf, self.cn_data).unwrap();
-                    match block_type.as_str() {
-                        "CG" => true,
-                        _ => false
-                    }
+                    matches!(block_type.as_str(), "CG")
                 } else { false}
             } else { false }
         }
@@ -313,9 +310,9 @@ pub mod channel {
                 let mut value_map: IndexMap<String, DataValue> = IndexMap::new();
                 for cn in self.sub_channels.as_ref().unwrap() {  // Currently, this structure decompose is done while get_data runtime; however this process should be done in channel's consturction time
                     cn.get_data(file, dg, cg)  // this could be recursive
-                      .and_then(|data| {
+                      .map(|data| {
                         value_map.insert(cn.get_name().to_string(), data);
-                        Ok(())
+                        
                       }).unwrap_or(());
                 }
                 return Ok(DataValue::STRUCT(value_map))
@@ -390,7 +387,7 @@ pub mod channel {
             self.bytes_num
         }
 
-        fn parse_sd_data(&self, file: &mut Cursor<&[u8]>, offsets: &Vec<u64>) -> Result<DataValue, DynError> {
+        fn parse_sd_data(&self, file: &mut Cursor<&[u8]>, offsets: &[u64]) -> Result<DataValue, DynError> {
             /* for non-cg vlsd channel ; only support string and raw bytes for now*/
             let data_blocks: Box<dyn VirtualBuf> = read_data_block(file, self.cn_data)?;
             let mut sd_data: Vec<String> = Vec::new();  // todo: is there any other possible data types?
@@ -429,7 +426,7 @@ pub mod channel {
             }
         }
 
-        fn parse_cg_vlsd(&self, file: &mut Cursor<&[u8]>, offsets: &Vec<u64>, id: u64, dg: &DataGroup) -> Result<DataValue, DynError>{
+        fn parse_cg_vlsd(&self, file: &mut Cursor<&[u8]>, offsets: &[u64], id: u64, dg: &DataGroup) -> Result<DataValue, DynError>{
             /* for cg vlsd channel ; only support string and raw bytes for now*/
             let mut res: Vec<String> = Vec::new();
             let mut byte_array: Vec<Vec<u8>> = Vec::new();
