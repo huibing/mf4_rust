@@ -855,15 +855,12 @@ impl Mf4Builder {
 
                 // Calculate record info
                 let mut record_size: u32 = 0;
-                let mut channel_count = 0;
 
                 if let Some(ref master) = cg.master {
                     record_size += (master.bit_count + 7) / 8;
-                    channel_count += 1;
                 }
                 for ch in &cg.channels {
                     record_size += (ch.bit_count + 7) / 8;
-                    channel_count += 1;
                 }
 
                 // Get cycle count from data
@@ -1651,7 +1648,7 @@ impl ChannelData for String {
                 for s in data {
                     let encoded: Vec<u16> = s.encode_utf16().collect();
                     let max_chars = max_len / 2;
-                    for (i, ch) in encoded.iter().enumerate().take(max_chars) {
+                    for ch in encoded.iter().take(max_chars) {
                         result.extend_from_slice(&ch.to_le_bytes());
                     }
                     // Pad remaining with null
@@ -1668,7 +1665,7 @@ impl ChannelData for String {
                 for s in data {
                     let encoded: Vec<u16> = s.encode_utf16().collect();
                     let max_chars = max_len / 2;
-                    for (i, ch) in encoded.iter().enumerate().take(max_chars) {
+                    for ch in encoded.iter().take(max_chars) {
                         result.extend_from_slice(&ch.to_be_bytes());
                     }
                     // Pad remaining with null

@@ -191,7 +191,7 @@ pub mod datagroup {
             Ok(dg)
         }
 
-        pub fn create_map(&self) -> HashMap<String, ChannelLink>{
+        pub fn create_map(&self) -> HashMap<String, ChannelLink<'_>>{
             let mut cn_link_map: HashMap<String, ChannelLink> = HashMap::new();
             for cg in self.channel_groups.iter() {
                 for channel in cg.get_channels().iter() {

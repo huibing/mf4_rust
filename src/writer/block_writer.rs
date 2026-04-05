@@ -4,7 +4,7 @@
 
 use std::io::{Seek, SeekFrom, Write};
 
-use super::error::{WriteError, WriteResult};
+use super::error::WriteResult;
 
 // ============================================================================
 // Block Header Constants

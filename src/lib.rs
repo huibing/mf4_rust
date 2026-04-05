@@ -684,7 +684,7 @@ pub mod parser {
             })
         }
 
-        pub fn generate_channel_map(&self) -> HashMap<String, ChannelLink> {
+        pub fn generate_channel_map(&self) -> HashMap<String, ChannelLink<'_>> {
             let mut map: HashMap<String, ChannelLink<'_>> = HashMap::new();
             for dg in self.data.iter() {
                 map.extend(dg.create_map());
@@ -797,7 +797,7 @@ pub mod parser {
         pub fn get_channel_names(&self) -> Vec<String> {
             self.mdf.get_all_channel_names()
         }
-        pub fn get_channel_link(&self, channel_name: &str) -> Option<ChannelLink> {
+        pub fn get_channel_link(&self, channel_name: &str) -> Option<ChannelLink<'_>> {
             let (dg_index, cg_index, cn_index) = self.channel_cache.get(channel_name)?;
             let dg = self.mdf.nth_dg(*dg_index)?;
             let cg = dg.nth_cg(*cg_index)?;
