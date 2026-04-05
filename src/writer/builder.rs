@@ -587,10 +587,17 @@ impl DataGroupBuilder {
         self
     }
 
-    /// Build the data group (validates configuration)
-    pub fn build(self) -> WriteResult<Self> {
+    /// Build the data group (validates configuration and auto-assigns record IDs)
+    pub fn build(mut self) -> WriteResult<Self> {
         if self.channel_groups.is_empty() {
             return Err(WriteError::MissingField("channel_groups".to_string()));
+        }
+        let num_cgs = self.channel_groups.len();
+        // Auto-assign record IDs if not set (1-indexed for multiple CGs)
+        for (idx, cg) in self.channel_groups.iter_mut().enumerate() {
+            if cg.record_id == 0 && num_cgs > 1 {
+                cg.record_id = (idx + 1) as u64;
+            }
         }
         Ok(self)
     }
@@ -918,6 +925,9 @@ impl Mf4Builder {
                     cn_idx += 1;
                 }
 
+                // Calculate cumulative byte offsets for channels
+                let mut cumulative_byte_offset: u32 = cg.master.as_ref().map(|m| m.bit_count.div_ceil(8) as u32).unwrap_or(0);
+
                 for ch in &cg.channels {
                     // Write TX block for channel name
                     if let Some(&tx_offset) = tx_offsets.get(&ch.name) {
@@ -929,12 +939,8 @@ impl Mf4Builder {
                     writer.seek(SeekFrom::Start(cn_offsets[dg_idx][cg_idx][cn_idx]))?;
                     let cn_next = if cn_idx + 1 < cn_offsets[dg_idx][cg_idx].len() { cn_offsets[dg_idx][cg_idx][cn_idx + 1] } else { 0 };
 
-                    // Calculate byte offset
-                    let byte_offset: u32 = if let Some(ref master) = cg.master {
-                        master.bit_count.div_ceil(8)
-                    } else {
-                        0
-                    };
+                    // Use cumulative byte offset for this channel
+                    let byte_offset = cumulative_byte_offset;
 
                     self.write_cn_block_raw(&mut writer,
                         cn_next,
@@ -952,59 +958,75 @@ impl Mf4Builder {
                         byte_offset,
                         ch.bit_count,
                     )?;
+
+                    // Update cumulative offset for next channel
+                    cumulative_byte_offset += ch.bit_count.div_ceil(8) as u32;
                     cn_idx += 1;
                 }
             }
         }
 
         // === Write Data Blocks ===
-        for (dg_idx, _dg) in self.data_groups.iter().enumerate() {
+        for (dg_idx, dg) in self.data_groups.iter().enumerate() {
             writer.seek(SeekFrom::Start(data_offsets[dg_idx]))?;
 
-            let cg = &self.data_groups[dg_idx].channel_groups[0];
+            let rec_id_size = dg.rec_id_size as usize;
+            let mut all_data: Vec<u8> = Vec::new();
 
-            // Calculate record size and cycle count upfront
-            let mut record_size: usize = 0;
-            let master_byte_size = cg.master.as_ref().map(|m| m.bit_count.div_ceil(8) as usize).unwrap_or(0);
-            record_size += master_byte_size;
-            let channel_byte_sizes: Vec<usize> = cg.channels.iter().map(|ch| {
-                let size = ch.bit_count.div_ceil(8) as usize;
-                record_size += size;
-                size
-            }).collect();
+            // Process each channel group
+            for cg in &dg.channel_groups {
+                // Calculate record size for this CG
+                let mut record_size: usize = 0;
+                let master_byte_size = cg.master.as_ref().map(|m| m.bit_count.div_ceil(8) as usize).unwrap_or(0);
+                record_size += master_byte_size;
+                let channel_byte_sizes: Vec<usize> = cg.channels.iter().map(|ch| {
+                    let size = ch.bit_count.div_ceil(8) as usize;
+                    record_size += size;
+                    size
+                }).collect();
 
-            let cycle_count = if let Some(ref master) = cg.master {
-                self.channel_data.get(&master.name).map(|d| d.len() / master_byte_size).unwrap_or(0)
-            } else if !cg.channels.is_empty() {
-                self.channel_data.get(&cg.channels[0].name).map(|d| d.len() / channel_byte_sizes[0]).unwrap_or(0)
-            } else {
-                0
-            };
+                // Get cycle count from master or first channel
+                let cycle_count = if let Some(ref master) = cg.master {
+                    self.channel_data.get(&master.name).map(|d| d.len() / master_byte_size).unwrap_or(0)
+                } else if !cg.channels.is_empty() {
+                    self.channel_data.get(&cg.channels[0].name).map(|d| d.len() / channel_byte_sizes[0]).unwrap_or(0)
+                } else {
+                    0
+                };
 
-            // Pre-allocate the data buffer
-            let total_size = cycle_count * record_size;
-            let mut all_data: Vec<u8> = Vec::with_capacity(total_size);
-
-            // Interleave data from all channels
-            for cycle in 0..cycle_count {
-                // Master channel first
-                if let Some(ref master) = cg.master {
-                    if let Some(data) = self.channel_data.get(&master.name) {
-                        let start = cycle * master_byte_size;
-                        let end = start + master_byte_size;
-                        if end <= data.len() {
-                            all_data.extend_from_slice(&data[start..end]);
+                // Write each record with optional record ID prefix
+                for cycle in 0..cycle_count {
+                    // Write record ID prefix if needed (for multiple CGs)
+                    if rec_id_size > 0 {
+                        let rec_id = cg.record_id;
+                        match rec_id_size {
+                            1 => all_data.push(rec_id as u8),
+                            2 => all_data.extend_from_slice(&(rec_id as u16).to_le_bytes()),
+                            4 => all_data.extend_from_slice(&(rec_id as u32).to_le_bytes()),
+                            8 => all_data.extend_from_slice(&rec_id.to_le_bytes()),
+                            _ => {}
                         }
                     }
-                }
-                // Then regular channels
-                for (ch_idx, ch) in cg.channels.iter().enumerate() {
-                    if let Some(data) = self.channel_data.get(&ch.name) {
-                        let byte_size = channel_byte_sizes[ch_idx];
-                        let start = cycle * byte_size;
-                        let end = start + byte_size;
-                        if end <= data.len() {
-                            all_data.extend_from_slice(&data[start..end]);
+
+                    // Master channel first
+                    if let Some(ref master) = cg.master {
+                        if let Some(data) = self.channel_data.get(&master.name) {
+                            let start = cycle * master_byte_size;
+                            let end = start + master_byte_size;
+                            if end <= data.len() {
+                                all_data.extend_from_slice(&data[start..end]);
+                            }
+                        }
+                    }
+                    // Then regular channels
+                    for (ch_idx, ch) in cg.channels.iter().enumerate() {
+                        if let Some(data) = self.channel_data.get(&ch.name) {
+                            let byte_size = channel_byte_sizes[ch_idx];
+                            let start = cycle * byte_size;
+                            let end = start + byte_size;
+                            if end <= data.len() {
+                                all_data.extend_from_slice(&data[start..end]);
+                            }
                         }
                     }
                 }
