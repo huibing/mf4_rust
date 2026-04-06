@@ -186,6 +186,8 @@ pub enum ConversionParams {
 /// Builder for conversion rules
 #[derive(Debug, Clone)]
 pub struct ConversionBuilder {
+    /// Conversion name
+    pub name: Option<String>,
     /// Conversion type (0=1:1, 1=Linear, etc.)
     pub cc_type: u8,
     /// Conversion parameters
@@ -199,6 +201,7 @@ pub struct ConversionBuilder {
 impl Default for ConversionBuilder {
     fn default() -> Self {
         Self {
+            name: None,
             cc_type: 0,
             params: ConversionParams::OneToOne,
             unit: None,
@@ -216,6 +219,7 @@ impl ConversionBuilder {
     /// Create a linear conversion: y = p1 + p2 * x
     pub fn linear(p1: f64, p2: f64) -> Self {
         Self {
+            name: None,
             cc_type: 1,
             params: ConversionParams::Linear { p1, p2 },
             unit: None,
@@ -226,6 +230,7 @@ impl ConversionBuilder {
     /// Create a rational conversion
     pub fn rational(coeffs: [f64; 6]) -> Self {
         Self {
+            name: None,
             cc_type: 2,
             params: ConversionParams::Rational { coeffs },
             unit: None,
@@ -236,6 +241,7 @@ impl ConversionBuilder {
     /// Create a table lookup conversion with interpolation
     pub fn table_interpolate(keys: Vec<f64>, values: Vec<f64>) -> Self {
         Self {
+            name: None,
             cc_type: 4,
             params: ConversionParams::Table {
                 keys,
@@ -250,6 +256,7 @@ impl ConversionBuilder {
     /// Create a table lookup conversion without interpolation
     pub fn table(keys: Vec<f64>, values: Vec<f64>) -> Self {
         Self {
+            name: None,
             cc_type: 5,
             params: ConversionParams::Table {
                 keys,
@@ -259,6 +266,12 @@ impl ConversionBuilder {
             unit: None,
             comment: None,
         }
+    }
+
+    /// Set the conversion name
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = Some(name.to_string());
+        self
     }
 
     /// Set the unit
@@ -771,7 +784,22 @@ impl Mf4Builder {
         let mut cg_offsets: Vec<Vec<u64>> = Vec::new();
         let mut cn_offsets: Vec<Vec<Vec<u64>>> = Vec::new();
         let mut tx_offsets: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        let mut cc_offsets: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        let mut cc_tx_offsets: std::collections::HashMap<String, Vec<u64>> = std::collections::HashMap::new(); // TX offsets for conversion texts
+        let mut cc_name_tx_offsets: std::collections::HashMap<String, u64> = std::collections::HashMap::new(); // TX offset for CC name
+        let mut cc_unit_tx_offsets: std::collections::HashMap<String, u64> = std::collections::HashMap::new(); // TX offset for CC unit
         let mut data_offsets: Vec<u64> = Vec::new();
+
+        // Helper function to calculate TX block size
+        let tx_block_size = |text_len: usize| -> u64 {
+            24 + ((text_len + 1 + 7) & !7) as u64
+        };
+
+        // Helper function to calculate CC block size
+        let cc_block_size = |val_count: usize, ref_count: usize| -> u64 {
+            // 24 (header) + 4*8 (links) + 80 (data) + val_count*8 + ref_count*8
+            24 + 32 + 80 + (val_count * 8) as u64 + (ref_count * 8) as u64
+        };
 
         // First pass: calculate sizes and reserve space
         for dg in self.data_groups.iter() {
@@ -797,7 +825,7 @@ impl Mf4Builder {
                     current_offset = (current_offset + 7) & !7;
                     let tx_offset = current_offset;
                     tx_offsets.insert(master.name.clone(), tx_offset);
-                    current_offset += 24 + ((master.name.len() + 1 + 7) & !7) as u64;
+                    current_offset += tx_block_size(master.name.len());
 
                     // CN block
                     current_offset = (current_offset + 7) & !7;
@@ -811,7 +839,62 @@ impl Mf4Builder {
                     current_offset = (current_offset + 7) & !7;
                     let tx_offset = current_offset;
                     tx_offsets.insert(ch.name.clone(), tx_offset);
-                    current_offset += 24 + ((ch.name.len() + 1 + 7) & !7) as u64;
+                    current_offset += tx_block_size(ch.name.len());
+
+                    // CC block for conversion (if present)
+                    if let Some(ref conversion) = ch.conversion {
+                        // TX block for CC name (if specified)
+                        if let Some(ref name) = conversion.name {
+                            current_offset = (current_offset + 7) & !7;
+                            cc_name_tx_offsets.insert(ch.name.clone(), current_offset);
+                            current_offset += tx_block_size(name.len());
+                        }
+
+                        // TX block for CC unit (if specified)
+                        if let Some(ref unit) = conversion.unit {
+                            current_offset = (current_offset + 7) & !7;
+                            cc_unit_tx_offsets.insert(ch.name.clone(), current_offset);
+                            current_offset += tx_block_size(unit.len());
+                        }
+
+                        let (val_count, ref_count, texts) = match &conversion.params {
+                            ConversionParams::Value2Text { keys, texts, .. } => {
+                                (keys.len(), texts.len() + 1, Some(texts.clone()))
+                            }
+                            ConversionParams::ValueRange2Text { ranges, texts, .. } => {
+                                (ranges.len() * 2, texts.len() + 1, Some(texts.clone()))
+                            }
+                            ConversionParams::Linear { .. } => (2, 0, None),
+                            _ => (0, 0, None),
+                        };
+
+                        // TX blocks for text strings (Value2Text/ValueRange2Text)
+                        if let Some(texts) = texts {
+                            let mut text_tx_offsets = Vec::new();
+                            for text in &texts {
+                                current_offset = (current_offset + 7) & !7;
+                                text_tx_offsets.push(current_offset);
+                                current_offset += tx_block_size(text.len());
+                            }
+                            // Also add space for default text
+                            if let Some(ref conversion) = ch.conversion {
+                                let default_text = match &conversion.params {
+                                    ConversionParams::Value2Text { default, .. } => default.clone(),
+                                    ConversionParams::ValueRange2Text { default, .. } => default.clone(),
+                                    _ => String::new(),
+                                };
+                                current_offset = (current_offset + 7) & !7;
+                                text_tx_offsets.push(current_offset);
+                                current_offset += tx_block_size(default_text.len());
+                            }
+                            cc_tx_offsets.insert(ch.name.clone(), text_tx_offsets);
+                        }
+
+                        // CC block
+                        current_offset = (current_offset + 7) & !7;
+                        cc_offsets.insert(ch.name.clone(), current_offset);
+                        current_offset += cc_block_size(val_count, ref_count);
+                    }
 
                     // CN block
                     current_offset = (current_offset + 7) & !7;
@@ -935,6 +1018,129 @@ impl Mf4Builder {
                         self.write_tx_block_raw(&mut writer, &ch.name)?;
                     }
 
+                    // Write CC block (conversion) if present
+                    let cc_conversion = if let Some(ref conversion) = ch.conversion {
+                        // Write TX block for CC name (if specified)
+                        let cc_tx_name = if let Some(ref name) = conversion.name {
+                            if let Some(&tx_offset) = cc_name_tx_offsets.get(&ch.name) {
+                                writer.seek(SeekFrom::Start(tx_offset))?;
+                                self.write_tx_block_raw(&mut writer, name)?;
+                                tx_offset
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+
+                        // Write TX block for CC unit (if specified)
+                        let cc_tx_unit = if let Some(ref unit) = conversion.unit {
+                            if let Some(&tx_offset) = cc_unit_tx_offsets.get(&ch.name) {
+                                writer.seek(SeekFrom::Start(tx_offset))?;
+                                self.write_tx_block_raw(&mut writer, unit)?;
+                                tx_offset
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+
+                        // Write TX blocks for text strings first (if Value2Text)
+                        let cc_ref: Vec<u64> = match &conversion.params {
+                            ConversionParams::Value2Text { keys: _, texts, default } => {
+                                // Write TX blocks for texts
+                                let mut refs = Vec::new();
+                                if let Some(text_tx_offsets) = cc_tx_offsets.get(&ch.name) {
+                                    // Write TX blocks for each text value
+                                    for (i, text) in texts.iter().enumerate() {
+                                        if i < text_tx_offsets.len() {
+                                            writer.seek(SeekFrom::Start(text_tx_offsets[i]))?;
+                                            self.write_tx_block_raw(&mut writer, text)?;
+                                            refs.push(text_tx_offsets[i]);
+                                        }
+                                    }
+                                    // Write TX block for default text
+                                    if texts.len() < text_tx_offsets.len() {
+                                        let default_offset = text_tx_offsets[texts.len()];
+                                        writer.seek(SeekFrom::Start(default_offset))?;
+                                        self.write_tx_block_raw(&mut writer, default)?;
+                                        refs.push(default_offset);
+                                    }
+                                }
+                                refs
+                            }
+                            ConversionParams::ValueRange2Text { ranges: _, texts, default } => {
+                                let mut refs = Vec::new();
+                                if let Some(text_tx_offsets) = cc_tx_offsets.get(&ch.name) {
+                                    for (i, text) in texts.iter().enumerate() {
+                                        if i < text_tx_offsets.len() {
+                                            writer.seek(SeekFrom::Start(text_tx_offsets[i]))?;
+                                            self.write_tx_block_raw(&mut writer, text)?;
+                                            refs.push(text_tx_offsets[i]);
+                                        }
+                                    }
+                                    // Write TX block for default text
+                                    if texts.len() < text_tx_offsets.len() {
+                                        let default_offset = text_tx_offsets[texts.len()];
+                                        writer.seek(SeekFrom::Start(default_offset))?;
+                                        self.write_tx_block_raw(&mut writer, default)?;
+                                        refs.push(default_offset);
+                                    }
+                                }
+                                refs
+                            }
+                            _ => Vec::new(),
+                        };
+
+                        // Write CC block
+                        if let Some(&cc_offset) = cc_offsets.get(&ch.name) {
+                            writer.seek(SeekFrom::Start(cc_offset))?;
+
+                            let (cc_val, cc_type, ref_count) = match &conversion.params {
+                                ConversionParams::OneToOne => (Vec::new(), 0, 0),
+                                ConversionParams::Linear { p1, p2 } => {
+                                    (vec![p1.to_bits(), p2.to_bits()], 1, 0)
+                                }
+                                ConversionParams::Value2Text { keys, .. } => {
+                                    let vals: Vec<u64> = keys.iter().map(|k| k.to_bits()).collect();
+                                    (vals, 7, cc_ref.len())
+                                }
+                                ConversionParams::ValueRange2Text { ranges, .. } => {
+                                    let mut vals = Vec::new();
+                                    for (min, max) in ranges {
+                                        vals.push(min.to_bits());
+                                        vals.push(max.to_bits());
+                                    }
+                                    (vals, 8, cc_ref.len())
+                                }
+                                _ => (Vec::new(), conversion.cc_type, 0),
+                            };
+
+                            let cc_block = super::block_writer::CcBlock {
+                                cc_tx_name,
+                                cc_md_comment: 0,
+                                cc_cc_inverse: 0,
+                                cc_tx_unit,
+                                cc_type,
+                                cc_precision: 0,
+                                cc_flags: 0,
+                                cc_ref_count: ref_count as u16,
+                                cc_val_count: cc_val.len() as u16,
+                                cc_phy_range_min: 0.0,
+                                cc_phy_range_max: 0.0,
+                                cc_val,
+                                cc_ref,
+                            };
+
+                            self.write_cc_block_raw(&mut writer, &cc_block)?;
+                        }
+
+                        cc_offsets.get(&ch.name).copied().unwrap_or(0)
+                    } else {
+                        0
+                    };
+
                     // Write CN block
                     writer.seek(SeekFrom::Start(cn_offsets[dg_idx][cg_idx][cn_idx]))?;
                     let cn_next = if cn_idx + 1 < cn_offsets[dg_idx][cg_idx].len() { cn_offsets[dg_idx][cg_idx][cn_idx + 1] } else { 0 };
@@ -947,7 +1153,7 @@ impl Mf4Builder {
                         0,
                         *tx_offsets.get(&ch.name).unwrap_or(&0),
                         0,
-                        0,
+                        cc_conversion,
                         0,
                         0,
                         0,
@@ -1206,6 +1412,52 @@ impl Mf4Builder {
         writer.write_all(&0f64.to_le_bytes())?; // cn_limit_max (8 bytes)
         writer.write_all(&0f64.to_le_bytes())?; // cn_limit_ext_min (8 bytes)
         writer.write_all(&0f64.to_le_bytes())?; // cn_limit_ext_max (8 bytes)
+        Ok(())
+    }
+
+    fn write_cc_block_raw<W: Write + Seek>(&self, writer: &mut W, cc: &super::block_writer::CcBlock) -> WriteResult<()> {
+        // CC block structure per ASAM MDF 4.x spec:
+        // - Header: 24 bytes (ID + reserved + length + link_count)
+        // - Links: (4 + cc_ref_count) * 8 bytes
+        // - Data: 24 bytes (cc_type through cc_phy_range_max: 2B + 3H + 2d)
+        // - cc_val: cc_val_count * 8 bytes
+
+        let link_count = 4 + cc.cc_ref.len() as u64;
+        let block_len = 24u64 + link_count * 8 + 24 + (cc.cc_val.len() * 8) as u64;
+
+        writer.write_all(b"##CC")?;
+        writer.write_all(&[0u8; 4])?;
+        writer.write_all(&block_len.to_le_bytes())?;
+        writer.write_all(&link_count.to_le_bytes())?;
+
+        // Fixed links (4)
+        writer.write_all(&cc.cc_tx_name.to_le_bytes())?;
+        writer.write_all(&cc.cc_md_comment.to_le_bytes())?;
+        writer.write_all(&cc.cc_cc_inverse.to_le_bytes())?;
+        writer.write_all(&cc.cc_tx_unit.to_le_bytes())?;
+
+        // Reference links (for text conversions)
+        for link in &cc.cc_ref {
+            writer.write_all(&link.to_le_bytes())?;
+        }
+
+        // Data fields (24 bytes: 2B + 3H + 2d)
+        writer.write_all(&cc.cc_type.to_le_bytes())?;           // 1 byte (B)
+        writer.write_all(&cc.cc_precision.to_le_bytes())?;      // 1 byte (B)
+        writer.write_all(&cc.cc_flags.to_le_bytes())?;          // 2 bytes (H)
+        writer.write_all(&cc.cc_ref_count.to_le_bytes())?;      // 2 bytes (H)
+        writer.write_all(&cc.cc_val_count.to_le_bytes())?;      // 2 bytes (H)
+        writer.write_all(&cc.cc_phy_range_min.to_le_bytes())?;  // 8 bytes (d)
+        writer.write_all(&cc.cc_phy_range_max.to_le_bytes())?;  // 8 bytes (d)
+        // Total: 1+1+2+2+2+8+8 = 24 bytes
+
+        // cc_val values (f64 stored as u64 bits)
+        for val in &cc.cc_val {
+            // Convert u64 bits back to f64 bytes
+            let f = f64::from_bits(*val);
+            writer.write_all(&f.to_le_bytes())?;
+        }
+
         Ok(())
     }
 

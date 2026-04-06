@@ -75,6 +75,7 @@ fn write_time_series_example() -> Result<(), Box<dyn std::error::Error>> {
 
     // Define the enum conversion (Value2Text for Status signal)
     let status_conversion = ConversionBuilder {
+        name: None,
         cc_type: 7, // Value to text
         params: ConversionParams::Value2Text {
             keys: vec![0.0, 1.0, 2.0, 3.0],
