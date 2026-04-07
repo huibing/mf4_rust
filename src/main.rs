@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn write_time_series_example() -> Result<(), Box<dyn std::error::Error>> {
     use mf4_parse::writer::{
         Mf4Builder, Mf4Metadata, ChannelBuilder, ChannelGroupBuilder,
-        DataGroupBuilder, ConversionBuilder,
+        DataGroupBuilder, ConversionBuilder, SourceInfoBuilder, SourceType, BusType,
     };
     use mf4_parse::writer::builder::ConversionParams;
 
@@ -107,8 +107,17 @@ fn write_time_series_example() -> Result<(), Box<dyn std::error::Error>> {
         .comment("1Hz cosine wave signal")
         .build()?;
 
+    // Source info for fast sampling channel group
+    let source_fast = SourceInfoBuilder::new()
+        .name("ADC_100Hz")
+        .path("DAQ/Card1/Channel1")
+        .source_type(SourceType::Io)
+        .comment("High-speed analog input card, 100Hz sampling rate, 10ms period")
+        .build()?;
+
     let cg_fast = ChannelGroupBuilder::new()
         .name("FastSampling_100Hz")
+        .acq_source(source_fast)
         .master(time_fast)
         .channel(sine_wave)
         .channel(cosine_wave)
@@ -131,8 +140,18 @@ fn write_time_series_example() -> Result<(), Box<dyn std::error::Error>> {
         .comment("0-255 periodic counter")
         .build()?;
 
+    // Source info for medium sampling channel group (CAN bus)
+    let source_medium = SourceInfoBuilder::new()
+        .name("CAN_Bus_20Hz")
+        .path("CAN1")
+        .source_type(SourceType::Bus)
+        .bus_type(BusType::Can)
+        .comment("CAN bus signal acquisition, 20Hz sampling rate, 50ms period")
+        .build()?;
+
     let cg_medium = ChannelGroupBuilder::new()
         .name("MediumSampling_20Hz")
+        .acq_source(source_medium)
         .master(time_medium)
         .channel(square_wave)
         .channel(counter)
@@ -155,8 +174,17 @@ fn write_time_series_example() -> Result<(), Box<dyn std::error::Error>> {
         .conversion(status_conversion)
         .build()?;
 
+    // Source info for slow sampling channel group (ECU)
+    let source_slow = SourceInfoBuilder::new()
+        .name("ECU_Monitor_10Hz")
+        .path("ECU/Internal")
+        .source_type(SourceType::Ecu)
+        .comment("ECU internal monitoring, 10Hz sampling rate, 100ms period")
+        .build()?;
+
     let cg_slow = ChannelGroupBuilder::new()
         .name("SlowSampling_10Hz")
+        .acq_source(source_slow)
         .master(time_slow)
         .channel(random_noise)
         .channel(status)

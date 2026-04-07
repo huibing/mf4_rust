@@ -24,7 +24,7 @@ mod write_test;
 
 // Re-export main types for convenience
 #[cfg(feature = "write")]
-pub use builder::{Mf4Builder, Mf4Metadata, CompressionConfig, DataGroupBuilder, ChannelGroupBuilder, ChannelBuilder, ConversionBuilder};
+pub use builder::{Mf4Builder, Mf4Metadata, CompressionConfig, DataGroupBuilder, ChannelGroupBuilder, ChannelBuilder, ConversionBuilder, SourceInfoBuilder, SourceType, BusType};
 
 #[cfg(feature = "streaming")]
 pub use stream_writer::{Mf4StreamWriter, StreamingDataGroup, ChannelGroupDef, ChannelDef, WriterState, StreamingConfig};

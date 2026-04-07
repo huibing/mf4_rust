@@ -1287,4 +1287,136 @@ mod tests {
 
         cleanup_test_file(&output_path);
     }
+
+    /// Test: Write MF4 file with acq_source (SI block) information
+    #[test]
+    fn test_builder_with_acq_source() {
+        use crate::writer::{SourceInfoBuilder, SourceType, BusType};
+
+        let metadata = Mf4Metadata {
+            version: "4.10".to_string(),
+            version_num: 410,
+            start_time_ns: 1704067200000000000,
+            author: Some("Test User".to_string()),
+            organization: Some("Test Org".to_string()),
+            project: Some("AcqSource Test".to_string()),
+            comment: Some("Test for acq_source feature".to_string()),
+        };
+
+        let mut builder = Mf4Builder::new(metadata);
+
+        // Define channels
+        let time_channel = ChannelBuilder::new_master_time("time");
+        let signal_channel = ChannelBuilder::new("CAN_Signal")
+            .data_type(5)      // FLOAT64 LE
+            .unit("m/s")
+            .comment("CAN bus signal")
+            .build().unwrap();
+
+        // Create source info for the channel group
+        let source = SourceInfoBuilder::new()
+            .name("CAN_Channel_1")
+            .path("CAN1")
+            .source_type(SourceType::Bus)
+            .bus_type(BusType::Can)
+            .simulated(false)
+            .build().unwrap();
+
+        // Create channel group with acq_name and acq_source
+        let cg = ChannelGroupBuilder::new()
+            .name("CAN_Measurement")
+            .acq_source(source)
+            .master(time_channel)
+            .channel(signal_channel)
+            .build().unwrap();
+
+        let dg = DataGroupBuilder::new()
+            .channel_group(cg)
+            .build().unwrap();
+
+        builder.add_data_group(dg);
+
+        // Add data
+        let time_data: Vec<f64> = (0..10).map(|i| i as f64 * 0.01).collect();
+        let signal_data: Vec<f64> = (0..10).map(|i| 10.0 + i as f64).collect();
+
+        builder.set_channel_data("time", &time_data).unwrap();
+        builder.set_channel_data("CAN_Signal", &signal_data).unwrap();
+
+        // Write to temp file
+        let output_path = PathBuf::from("temp_acq_source_test.mf4");
+        cleanup_test_file(&output_path);
+
+        let result = builder.write(output_path.clone());
+        assert!(result.is_ok(), "Write should succeed");
+
+        // Read back and verify acq_source is present
+        if result.is_ok() {
+            let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+
+            // Get channel group info
+            let cgs = mf4.get_all_channel_groups();
+            assert!(!cgs.is_empty(), "Should have at least one channel group");
+
+            // Verify acq_name
+            let acq_name = cgs[0].get_acq_name();
+            assert_eq!(acq_name, "CAN_Measurement", "acq_name should match");
+
+            // Verify acq_source (SI block)
+            let acq_source = cgs[0].get_acq_source();
+            assert_eq!(acq_source.get_name(), "CAN_Channel_1", "SI name should match");
+            assert_eq!(acq_source.get_path(), "CAN1", "SI path should match");
+
+            println!("Acq source test passed:");
+            println!("  acq_name: {}", acq_name);
+            println!("  SI name: {}", acq_source.get_name());
+            println!("  SI path: {}", acq_source.get_path());
+            println!("  SI type: {}", acq_source.get_si_type());
+            println!("  Bus type: {}", acq_source.get_bus_type());
+        }
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: Verify time_series_demo.mf4 has correct acq_source info
+    #[test]
+    fn test_time_series_demo_acq_source() {
+
+        let input_path = PathBuf::from("test/time_series_demo.mf4");
+        if !input_path.exists() {
+            println!("Skipping test: test/time_series_demo.mf4 not found. Run the binary first.");
+            return;
+        }
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(input_path.clone(), None).unwrap();
+        let cgs = mf4.get_all_channel_groups();
+
+        assert_eq!(cgs.len(), 3, "Should have 3 channel groups");
+
+        // Verify FastSampling_100Hz (ADC I/O source)
+        let cg_fast = &cgs[0];
+        assert_eq!(cg_fast.get_acq_name(), "FastSampling_100Hz");
+        let source_fast = cg_fast.get_acq_source();
+        assert_eq!(source_fast.get_name(), "ADC_100Hz");
+        assert_eq!(source_fast.get_path(), "DAQ/Card1/Channel1");
+        println!("Fast sampling source: {} - {}", source_fast.get_name(), source_fast.get_si_type());
+
+        // Verify MediumSampling_20Hz (CAN bus source)
+        let cg_medium = &cgs[1];
+        assert_eq!(cg_medium.get_acq_name(), "MediumSampling_20Hz");
+        let source_medium = cg_medium.get_acq_source();
+        assert_eq!(source_medium.get_name(), "CAN_Bus_20Hz");
+        assert_eq!(source_medium.get_path(), "CAN1");
+        println!("Medium sampling source: {} - {} - {}", source_medium.get_name(), source_medium.get_si_type(), source_medium.get_bus_type());
+
+        // Verify SlowSampling_10Hz (ECU source)
+        let cg_slow = &cgs[2];
+        assert_eq!(cg_slow.get_acq_name(), "SlowSampling_10Hz");
+        let source_slow = cg_slow.get_acq_source();
+        assert_eq!(source_slow.get_name(), "ECU_Monitor_10Hz");
+        assert_eq!(source_slow.get_path(), "ECU/Internal");
+        println!("Slow sampling source: {} - {}", source_slow.get_name(), source_slow.get_si_type());
+
+        println!("Time series demo acq_source verification passed!");
+    }
 }

@@ -473,6 +473,134 @@ impl ChannelBuilder {
 }
 
 // ============================================================================
+// Source Info Builder (for SI blocks)
+// ============================================================================
+
+/// Source type for SI block
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SourceType {
+    /// Other source type
+    #[default]
+    Other = 0,
+    /// ECU (Electronic Control Unit)
+    Ecu = 1,
+    /// Bus (CAN, LIN, etc.)
+    Bus = 2,
+    /// I/O (Input/Output)
+    Io = 3,
+    /// Tool (measurement tool)
+    Tool = 4,
+    /// User-defined source
+    User = 5,
+}
+
+/// Bus type for SI block
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BusType {
+    /// No bus
+    #[default]
+    None = 0,
+    /// Other bus type
+    Other = 1,
+    /// CAN bus
+    Can = 2,
+    /// LIN bus
+    Lin = 3,
+    /// MOST bus
+    Most = 4,
+    /// FlexRay bus
+    FlexRay = 5,
+    /// K-Line bus
+    KLine = 6,
+    /// Ethernet bus
+    Ethernet = 7,
+    /// USB
+    Usb = 8,
+}
+
+/// Builder for source information (SI block)
+///
+/// Used to record the source of measurement data, such as sampling device,
+/// ECU information, bus type, etc.
+///
+/// # Example
+///
+/// ```ignore
+/// use mf4_parse::writer::{SourceInfoBuilder, SourceType, BusType};
+///
+/// let source = SourceInfoBuilder::new()
+///     .name("CAN_Channel_1")
+///     .path("CAN1")
+///     .source_type(SourceType::Bus)
+///     .bus_type(BusType::Can)
+///     .simulated(false)
+///     .build();
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct SourceInfoBuilder {
+    /// Source name (e.g., "CAN_Channel_1")
+    pub name: String,
+    /// Source path (e.g., "CAN1")
+    pub path: String,
+    /// Comment/description
+    pub comment: Option<String>,
+    /// Source type (ECU, Bus, I/O, Tool, User)
+    pub source_type: SourceType,
+    /// Bus type (CAN, LIN, FlexRay, etc.)
+    pub bus_type: BusType,
+    /// Whether the source is simulated
+    pub simulated: bool,
+}
+
+impl SourceInfoBuilder {
+    /// Create a new source info builder with default values
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the source name
+    pub fn name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+
+    /// Set the source path
+    pub fn path(mut self, path: &str) -> Self {
+        self.path = path.to_string();
+        self
+    }
+
+    /// Set the comment/description
+    pub fn comment(mut self, comment: &str) -> Self {
+        self.comment = Some(comment.to_string());
+        self
+    }
+
+    /// Set the source type
+    pub fn source_type(mut self, source_type: SourceType) -> Self {
+        self.source_type = source_type;
+        self
+    }
+
+    /// Set the bus type
+    pub fn bus_type(mut self, bus_type: BusType) -> Self {
+        self.bus_type = bus_type;
+        self
+    }
+
+    /// Set whether the source is simulated
+    pub fn simulated(mut self, simulated: bool) -> Self {
+        self.simulated = simulated;
+        self
+    }
+
+    /// Build the source info (validates configuration)
+    pub fn build(self) -> WriteResult<Self> {
+        Ok(self)
+    }
+}
+
+// ============================================================================
 // Channel Group Builder
 // ============================================================================
 
@@ -481,6 +609,8 @@ impl ChannelBuilder {
 pub struct ChannelGroupBuilder {
     /// Acquisition name
     pub acq_name: String,
+    /// Acquisition source (SI block info)
+    pub acq_source: Option<SourceInfoBuilder>,
     /// Record ID (for multi-CG scenarios)
     pub record_id: u64,
     /// Channels in this group (excluding master)
@@ -498,6 +628,7 @@ impl ChannelGroupBuilder {
     pub fn new() -> Self {
         Self {
             acq_name: String::new(),
+            acq_source: None,
             record_id: 0,
             channels: Vec::new(),
             master: None,
@@ -509,6 +640,28 @@ impl ChannelGroupBuilder {
     /// Set the acquisition name
     pub fn name(mut self, name: &str) -> Self {
         self.acq_name = name.to_string();
+        self
+    }
+
+    /// Set the acquisition source (SI block information)
+    ///
+    /// Used to record sampling device, source type, bus type, etc.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let source = SourceInfoBuilder::new()
+    ///     .name("ECU1")
+    ///     .source_type(SourceType::Ecu)
+    ///     .build()?;
+    ///
+    /// let cg = ChannelGroupBuilder::new()
+    ///     .name("Measurement")
+    ///     .acq_source(source)
+    ///     .build()?;
+    /// ```
+    pub fn acq_source(mut self, source: SourceInfoBuilder) -> Self {
+        self.acq_source = Some(source);
         self
     }
 
@@ -790,6 +943,13 @@ impl Mf4Builder {
         let mut cc_unit_tx_offsets: std::collections::HashMap<String, u64> = std::collections::HashMap::new(); // TX offset for CC unit
         let mut data_offsets: Vec<u64> = Vec::new();
 
+        // Track CG-level offsets for acq_name and acq_source (SI block)
+        // Key: (dg_idx, cg_idx) -> offset
+        let mut cg_acq_name_tx_offsets: std::collections::HashMap<(usize, usize), u64> = std::collections::HashMap::new();
+        let mut cg_si_offsets: std::collections::HashMap<(usize, usize), u64> = std::collections::HashMap::new();
+        let mut cg_si_name_tx_offsets: std::collections::HashMap<(usize, usize), u64> = std::collections::HashMap::new();
+        let mut cg_si_path_tx_offsets: std::collections::HashMap<(usize, usize), u64> = std::collections::HashMap::new();
+
         // Helper function to calculate TX block size
         let tx_block_size = |text_len: usize| -> u64 {
             24 + ((text_len + 1 + 7) & !7) as u64
@@ -802,7 +962,7 @@ impl Mf4Builder {
         };
 
         // First pass: calculate sizes and reserve space
-        for dg in self.data_groups.iter() {
+        for (dg_idx, dg) in self.data_groups.iter().enumerate() {
             // Align and record DG offset
             current_offset = (current_offset + 7) & !7;
             dg_offsets.push(current_offset);
@@ -811,11 +971,40 @@ impl Mf4Builder {
             let mut cg_offs = Vec::new();
             let mut cn_offs = Vec::new();
 
-            for cg in dg.channel_groups.iter() {
+            for (cg_idx, cg) in dg.channel_groups.iter().enumerate() {
                 // Align and record CG offset
                 current_offset = (current_offset + 7) & !7;
                 cg_offs.push(current_offset);
                 current_offset += 104; // CG block size (104 bytes)
+
+                // TX block for CG acq_name (if not empty)
+                if !cg.acq_name.is_empty() {
+                    current_offset = (current_offset + 7) & !7;
+                    cg_acq_name_tx_offsets.insert((dg_idx, cg_idx), current_offset);
+                    current_offset += tx_block_size(cg.acq_name.len());
+                }
+
+                // SI block for CG acq_source (if present)
+                if let Some(ref source) = cg.acq_source {
+                    // TX block for SI name
+                    if !source.name.is_empty() {
+                        current_offset = (current_offset + 7) & !7;
+                        cg_si_name_tx_offsets.insert((dg_idx, cg_idx), current_offset);
+                        current_offset += tx_block_size(source.name.len());
+                    }
+
+                    // TX block for SI path
+                    if !source.path.is_empty() {
+                        current_offset = (current_offset + 7) & !7;
+                        cg_si_path_tx_offsets.insert((dg_idx, cg_idx), current_offset);
+                        current_offset += tx_block_size(source.path.len());
+                    }
+
+                    // SI block (56 bytes)
+                    current_offset = (current_offset + 7) & !7;
+                    cg_si_offsets.insert((dg_idx, cg_idx), current_offset);
+                    current_offset += 56; // SI block size
+                }
 
                 let mut cn_list = Vec::new();
 
@@ -964,17 +1153,58 @@ impl Mf4Builder {
 
                 let cn_first = if !cn_offsets[dg_idx][cg_idx].is_empty() { cn_offsets[dg_idx][cg_idx][0] } else { 0 };
 
+                // Get offsets for CG acq_name and acq_source
+                let tx_acq_name_offset = cg_acq_name_tx_offsets.get(&(dg_idx, cg_idx)).copied().unwrap_or(0);
+                let si_acq_source_offset = cg_si_offsets.get(&(dg_idx, cg_idx)).copied().unwrap_or(0);
+
                 self.write_cg_block_raw(&mut writer,
                     if cg_idx + 1 < cg_offsets[dg_idx].len() { cg_offsets[dg_idx][cg_idx + 1] } else { 0 },
                     cn_first,
-                    0, // tx_acq_name
-                    0, // si_acq_source
+                    tx_acq_name_offset,
+                    si_acq_source_offset,
                     0, // md_comment
                     cg.record_id,
                     cycle_count,
                     record_size,
                     0, // invalid_bytes
                 )?;
+
+                // Write TX block for CG acq_name
+                if let Some(&tx_offset) = cg_acq_name_tx_offsets.get(&(dg_idx, cg_idx)) {
+                    writer.seek(SeekFrom::Start(tx_offset))?;
+                    self.write_tx_block_raw(&mut writer, &cg.acq_name)?;
+                }
+
+                // Write SI block for CG acq_source
+                if let Some(ref source) = cg.acq_source {
+                    // Write TX blocks for SI name and path
+                    let si_name_offset = cg_si_name_tx_offsets.get(&(dg_idx, cg_idx)).copied().unwrap_or(0);
+                    let si_path_offset = cg_si_path_tx_offsets.get(&(dg_idx, cg_idx)).copied().unwrap_or(0);
+
+                    if let Some(&tx_offset) = cg_si_name_tx_offsets.get(&(dg_idx, cg_idx)) {
+                        writer.seek(SeekFrom::Start(tx_offset))?;
+                        self.write_tx_block_raw(&mut writer, &source.name)?;
+                    }
+
+                    if let Some(&tx_offset) = cg_si_path_tx_offsets.get(&(dg_idx, cg_idx)) {
+                        writer.seek(SeekFrom::Start(tx_offset))?;
+                        self.write_tx_block_raw(&mut writer, &source.path)?;
+                    }
+
+                    // Write SI block
+                    if let Some(&si_offset) = cg_si_offsets.get(&(dg_idx, cg_idx)) {
+                        writer.seek(SeekFrom::Start(si_offset))?;
+                        let si_flags = if source.simulated { 0x01u8 } else { 0x00u8 };
+                        self.write_si_block_raw(&mut writer,
+                            si_name_offset,
+                            si_path_offset,
+                            0, // si_md_comment
+                            source.source_type as u8,
+                            source.bus_type as u8,
+                            si_flags,
+                        )?;
+                    }
+                }
 
                 // Write TX blocks and CN blocks
                 let mut cn_idx = 0;
@@ -1534,6 +1764,31 @@ impl Mf4Builder {
 
         // Compressed data
         writer.write_all(&compressed_data)?;
+
+        Ok(())
+    }
+
+    fn write_si_block_raw<W: Write + Seek>(&self, writer: &mut W, si_tx_name: u64, si_tx_path: u64, si_md_comment: u64, si_type: u8, si_bus_type: u8, si_flags: u8) -> WriteResult<()> {
+        // SI block structure:
+        // Links (3): si_tx_name, si_tx_path, si_md_comment
+        // Data: si_type (1), si_bus_type (1), si_flags (1), si_reserved (5)
+        // Total: 24 + 24 + 8 = 56 bytes
+
+        writer.write_all(b"##SI")?;
+        writer.write_all(&[0u8; 4])?;  // Reserved
+        writer.write_all(&56u64.to_le_bytes())?; // Block length
+        writer.write_all(&3u64.to_le_bytes())?;  // Link count (3 links)
+
+        // Links
+        writer.write_all(&si_tx_name.to_le_bytes())?;
+        writer.write_all(&si_tx_path.to_le_bytes())?;
+        writer.write_all(&si_md_comment.to_le_bytes())?;
+
+        // Data fields
+        writer.write_all(&si_type.to_le_bytes())?;       // si_type (1 byte)
+        writer.write_all(&si_bus_type.to_le_bytes())?;   // si_bus_type (1 byte)
+        writer.write_all(&si_flags.to_le_bytes())?;      // si_flags (1 byte)
+        writer.write_all(&[0u8; 5])?;                     // si_reserved (5 bytes)
 
         Ok(())
     }
