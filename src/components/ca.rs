@@ -79,7 +79,7 @@ pub mod channelarray {
                     }
                 }
             }
-            let mut s = format!("{}", channel_name);
+            let mut s = channel_name.to_string();
             dfs_gen(&mut s, self, 0, &mut array_names);
             array_names
         }
@@ -106,9 +106,9 @@ pub mod channelarray {
             array_indexs
         }
 
-        pub fn calculate_byte_offset(&self, index: &Vec<usize>) -> Result<u32, Box<dyn std::error::Error>> {
+        pub fn calculate_byte_offset(&self, index: &[usize]) -> Result<u32, Box<dyn std::error::Error>> {
             if index.len() != self.ca_ndim as usize {
-                return Err("Invalid index array length for CA".into());
+                Err("Invalid index array length for CA".into())
             } else {
                 Ok(index.iter().zip(self.f_vec.iter()).fold(0, |acc, y| acc + (y.1 * y.0) as u32))
             }

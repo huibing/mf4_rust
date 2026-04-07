@@ -42,17 +42,7 @@ pub mod conversion {
     impl CcType {
         pub fn is_num(&self) -> bool {
             // the target type of this conversion is numeric
-            match self {
-                CcType::OneToOne => true,
-                CcType::Linear(_) => true,
-                CcType::Rational(_) => true,
-                CcType::TableInt(_) => true,
-                CcType::Table(_) => true,
-                CcType::ValueRange(_) => true,
-                CcType::Text2Value(_) => true,
-                CcType::Algebraic(_) => true,
-                _ => false
-            }
+            matches!(self, CcType::OneToOne | CcType::Linear(_) | CcType::Rational(_) | CcType::TableInt(_) | CcType::Table(_) | CcType::ValueRange(_) | CcType::Text2Value(_) | CcType::Algebraic(_))
         }
     }
 
@@ -81,7 +71,7 @@ pub mod conversion {
             let cc_val: Vec<u64> = block_info.get_data_value("cc_val").unwrap().clone().try_into().unwrap();
             let cc_val_count: u16 = block_info.get_data_value_first("cc_val_count").unwrap();
             let cc_ref: Vec<u64> = block_info.get_link_offset_vec("cc_ref")
-                                            .unwrap_or(Vec::new()).clone().try_into().unwrap(); // could be Nil
+                                            .unwrap_or_default().clone(); // could be Nil
             let cc_ref_count: u16 = block_info.get_data_value_first("cc_ref_count").unwrap();
             match cc_type_raw {
                 0 => { // one to one
@@ -100,7 +90,7 @@ pub mod conversion {
                     let text = get_clean_text(buf, cc_ref[0])?;
                     cc_type = CcType::Algebraic(text); 
                 },
-                4|5 if cc_val.len() == (cc_val_count) as usize && cc_val.len() % 2 == 0 => { // table
+                4|5 if cc_val.len() == (cc_val_count) as usize && cc_val.len().is_multiple_of(2) => { // table
                     let mut key: Vec<f64> = Vec::new();
                     let mut value: Vec<f64> = Vec::new();
                     for i in 0..cc_val_count/2 {
@@ -114,18 +104,18 @@ pub mod conversion {
                     }
                 },
                 6 if cc_val.len() == (cc_val_count) as usize => { // value range
-                    let value: Vec<f64> = cc_val.into_iter().map(|v| to_f64(v)).collect();  // consumed cc_val
+                    let value: Vec<f64> = cc_val.into_iter().map(to_f64).collect();  // consumed cc_val
                     cc_type = CcType::ValueRange(value);
                 },
                 7 if cc_val.len() == cc_val_count as usize && cc_ref.len() == cc_ref_count as usize && cc_ref_count == cc_val_count + 1 => { // Value2Text
-                    let key: Vec<f64> = cc_val.into_iter().map(|v| to_f64(v)).collect();
+                    let key: Vec<f64> = cc_val.into_iter().map(to_f64).collect();
                     let mut text: Vec<TextOrScale> = Vec::new();
                     for link in cc_ref.into_iter() {
                         let block_type = peek_block_type(buf, link).unwrap_or("TX".to_string());  // handle Nil
                         match block_type.as_str() {
                             "TX" => text.push(TextOrScale::Text(get_clean_text(buf, link).unwrap_or("".to_string()))),
                             "CC" => {
-                                let conversion = Conversion::new(buf, link).unwrap_or(Conversion::default());
+                                let conversion = Conversion::new(buf, link).unwrap_or_default();
                                 text.push(TextOrScale::Scale(conversion));
                             }
                             _ => return Ok(Conversion::default())   // error handling: no panic no err, just fall back to default
@@ -147,7 +137,7 @@ pub mod conversion {
                         match block_type.as_str() {
                             "TX" => text.push(TextOrScale::Text(get_clean_text(buf, link).unwrap_or("".to_string()))),
                             "CC" => {
-                                let conversion = Conversion::new(buf, link).unwrap_or(Conversion::default());
+                                let conversion = Conversion::new(buf, link).unwrap_or_default();
                                 text.push(TextOrScale::Scale(conversion));
                             }
                             _ => return Ok(Conversion::default())   // error handling: no panic no err, just fall back to default
@@ -226,7 +216,7 @@ pub mod conversion {
                 },
                 CcType::TableInt((index, value)) => {
                     let mut right_ind: usize = 0;
-                    while inp >= index[right_ind] && right_ind < index.len() {
+                    while right_ind < index.len() && inp >= index[right_ind] {
                         right_ind += 1;
                     };
                     if right_ind == 0 {
@@ -270,7 +260,7 @@ pub mod conversion {
                 },
                 CcType::Algebraic(text) => {
                     let context = context_map! {"X" => inp}.unwrap();
-                    let value = eval_float_with_context(&text, &context).unwrap();
+                    let value = eval_float_with_context(text, &context).unwrap();
                     U::from(value)
                 }
                 _ => {
@@ -331,7 +321,7 @@ pub mod conversion {
             }
         }
 
-        pub fn convert_from_text(&self, buf: &mut Cursor<&[u8]>, inp: &Vec<String>) -> Result<DataValue, Box<dyn std::error::Error>> {
+        pub fn convert_from_text(&self, buf: &mut Cursor<&[u8]>, inp: &[String]) -> Result<DataValue, Box<dyn std::error::Error>> {
             match &self.cc_type {
                 CcType::Text2Value((text, value)) => {
                     let mut ref_text: Vec<String> = Vec::new();
@@ -358,7 +348,7 @@ pub mod conversion {
                 },
                 CcType::Text2Text(text) => {
                     let total_num: usize = text.len();
-                    if total_num % 2 == 0 {
+                    if total_num.is_multiple_of(2) {
                         Err("text2text cc block has odd number of elements".into())
                     } else {
                         let half_num = total_num / 2;
@@ -386,7 +376,7 @@ pub mod conversion {
                         Ok(DataValue::STRINGS(result))  
                     }
                 },
-                CcType::OneToOne => Ok(DataValue::STRINGS(inp.clone())),
+                CcType::OneToOne => Ok(DataValue::STRINGS(inp.to_vec())),
                 other_type => {
                     Err(format!("{:?} does not support from text conversions", other_type).into())
                 },

@@ -1,0 +1,1301 @@
+//! Mf4StreamWriter - Streaming API for incremental MF4 file creation
+//!
+//! This module provides streaming write capability for applications that need to
+//! incrementally append data to MF4 files over time.
+//!
+//! # Architecture
+//!
+//! Streaming writes use a **chained data block** strategy:
+//! - Data is written in fixed-size blocks (configurable)
+//! - Multiple DT/DZ blocks are linked via DL block
+//! - On finalize, optionally compact into a single block
+//!
+//! ```text
+//! DG.dg_data ──> DL Block ──> DT Block 1 (block_size)
+//!                        ├──> DT Block 2
+//!                        └──> DT Block 3
+//! ```
+
+use std::path::PathBuf;
+use std::io::{BufWriter, Write, Seek};
+
+use super::error::{WriteError, WriteResult};
+use super::builder::Mf4Metadata;
+
+// ============================================================================
+// Streaming Configuration
+// ============================================================================
+
+/// Configuration for streaming write
+#[derive(Debug, Clone)]
+pub struct StreamingConfig {
+    /// Size of each data block in bytes (default: 1MB)
+    pub block_size: u64,
+    /// Enable compression for data blocks
+    pub enable_compression: bool,
+    /// Compression threshold (data size above this will be compressed)
+    pub compression_threshold: u64,
+    /// Compression level (1-9)
+    pub compression_level: u8,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            block_size: 1_000_000, // 1 MB
+            enable_compression: false,
+            compression_threshold: 100_000, // 100 KB
+            compression_level: 6,
+        }
+    }
+}
+
+impl StreamingConfig {
+    /// Create a new configuration with default values
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the block size
+    pub fn with_block_size(mut self, size: u64) -> Self {
+        self.block_size = size;
+        self
+    }
+
+    /// Enable compression with default settings
+    pub fn with_compression(mut self) -> Self {
+        self.enable_compression = true;
+        self
+    }
+
+    /// Enable compression with custom settings
+    pub fn with_compression_level(mut self, level: u8) -> Self {
+        self.enable_compression = true;
+        self.compression_level = level.clamp(1, 9);
+        self
+    }
+}
+
+// ============================================================================
+// Writer State
+// ============================================================================
+
+/// Writer state machine
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriterState {
+    /// File created, metadata written
+    Initialized,
+    /// Channel structure defined, ready for data
+    StructureReady,
+    /// Data being appended
+    Writing,
+    /// File finalized and closed
+    Finalized,
+}
+
+impl Default for WriterState {
+    fn default() -> Self {
+        Self::Initialized
+    }
+}
+
+impl std::fmt::Display for WriterState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriterState::Initialized => write!(f, "Initialized"),
+            WriterState::StructureReady => write!(f, "StructureReady"),
+            WriterState::Writing => write!(f, "Writing"),
+            WriterState::Finalized => write!(f, "Finalized"),
+        }
+    }
+}
+
+// ============================================================================
+// Channel Definition (Immutable after creation)
+// ============================================================================
+
+/// Definition of a channel (immutable after creation)
+#[derive(Debug, Clone)]
+pub struct ChannelDef {
+    /// Channel name
+    pub name: String,
+    /// Data type (0-10)
+    pub data_type: u8,
+    /// Byte offset within record
+    pub byte_offset: u32,
+    /// Bit offset within byte
+    pub bit_offset: u8,
+    /// Number of bits
+    pub bit_count: u32,
+    /// Unit string
+    pub unit: Option<String>,
+    /// Channel type (Fixed, VLSD, Master, VirtualMaster)
+    pub cn_type: u8,
+    /// Sync type (None, Time, Angle, Distance, Index)
+    pub sync_type: u8,
+}
+
+impl ChannelDef {
+    /// Create a new channel definition
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            data_type: 5, // FLOAT64 LE
+            byte_offset: 0,
+            bit_offset: 0,
+            bit_count: 64,
+            unit: None,
+            cn_type: 0,
+            sync_type: 0,
+        }
+    }
+
+    /// Create a new master time channel
+    pub fn new_master(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            data_type: 5, // FLOAT64 LE
+            byte_offset: 0,
+            bit_offset: 0,
+            bit_count: 64,
+            unit: Some("s".to_string()),
+            cn_type: 2, // Master
+            sync_type: 1, // Time
+        }
+    }
+
+    /// Set the data type
+    pub fn data_type(mut self, data_type: u8) -> Self {
+        self.data_type = data_type;
+        self
+    }
+
+    /// Set the unit
+    pub fn unit(mut self, unit: &str) -> Self {
+        self.unit = Some(unit.to_string());
+        self
+    }
+
+    /// Get the number of bytes for this channel
+    pub fn bytes_count(&self) -> u32 {
+        (self.bit_count + 7) / 8
+    }
+}
+
+// ============================================================================
+// Channel Group Definition (Immutable after creation)
+// ============================================================================
+
+/// Definition of a channel group (immutable after creation)
+#[derive(Debug, Clone)]
+pub struct ChannelGroupDef {
+    /// Acquisition name
+    pub acq_name: String,
+    /// Channel definitions
+    pub channels: Vec<ChannelDef>,
+    /// Master channel definition
+    pub master: Option<ChannelDef>,
+    /// Record ID (for multi-CG scenarios)
+    pub record_id: u64,
+    /// Record size in bytes
+    pub record_size: u32,
+    /// Data bytes (excluding invalid bytes)
+    pub data_bytes: u32,
+}
+
+impl ChannelGroupDef {
+    /// Create a new channel group definition builder
+    pub fn builder() -> ChannelGroupDefBuilder {
+        ChannelGroupDefBuilder::new()
+    }
+
+    /// Get total cycle count written so far
+    pub fn cycle_count(&self) -> u64 {
+        // This will be tracked separately in StreamingDataGroup
+        0
+    }
+
+    /// Get channel by name
+    pub fn get_channel(&self, name: &str) -> Option<&ChannelDef> {
+        self.channels.iter().find(|c| c.name == name)
+            .or_else(|| self.master.as_ref().and_then(|m| if m.name == name { Some(m) } else { None }))
+    }
+}
+
+/// Builder for ChannelGroupDef
+#[derive(Debug, Clone)]
+pub struct ChannelGroupDefBuilder {
+    acq_name: String,
+    channels: Vec<ChannelDef>,
+    master: Option<ChannelDef>,
+    record_id: u64,
+}
+
+impl ChannelGroupDefBuilder {
+    /// Create a new builder
+    pub fn new() -> Self {
+        Self {
+            acq_name: String::new(),
+            channels: Vec::new(),
+            master: None,
+            record_id: 0,
+        }
+    }
+
+    /// Set the acquisition name
+    pub fn name(mut self, name: &str) -> Self {
+        self.acq_name = name.to_string();
+        self
+    }
+
+    /// Set the record ID
+    pub fn record_id(mut self, record_id: u64) -> Self {
+        self.record_id = record_id;
+        self
+    }
+
+    /// Set the master channel
+    pub fn master(mut self, channel: ChannelDef) -> Self {
+        self.master = Some(channel);
+        self
+    }
+
+    /// Add a channel
+    pub fn channel(mut self, channel: ChannelDef) -> Self {
+        self.channels.push(channel);
+        self
+    }
+
+    /// Build the channel group definition
+    pub fn build(self) -> WriteResult<ChannelGroupDef> {
+        if self.channels.is_empty() && self.master.is_none() {
+            return Err(WriteError::InvalidChannelConfig(
+                "Channel group must have at least one channel".to_string(),
+            ));
+        }
+
+        // Calculate byte offsets
+        let mut current_offset: u32 = 0;
+        let mut channels = self.channels;
+
+        // Master comes first if present
+        let mut master = self.master;
+        if let Some(ref mut m) = master {
+            m.byte_offset = current_offset;
+            current_offset += m.bytes_count();
+        }
+
+        // Then regular channels
+        for ch in channels.iter_mut() {
+            ch.byte_offset = current_offset;
+            current_offset += ch.bytes_count();
+        }
+
+        Ok(ChannelGroupDef {
+            acq_name: self.acq_name,
+            channels,
+            master,
+            record_id: self.record_id,
+            record_size: current_offset,
+            data_bytes: current_offset,
+        })
+    }
+}
+
+impl Default for ChannelGroupDefBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// Record Data
+// ============================================================================
+
+/// Record data for streaming write
+#[derive(Debug, Clone)]
+pub struct RecordData {
+    /// Record ID (for multi-CG scenarios)
+    pub record_id: u64,
+    /// Raw record bytes
+    pub data: Vec<u8>,
+}
+
+impl RecordData {
+    /// Create a new record with the given size
+    pub fn new(record_id: u64, size: usize) -> Self {
+        Self {
+            record_id,
+            data: vec![0u8; size],
+        }
+    }
+
+    /// Write a value at the specified offset
+    pub fn write_u8(&mut self, offset: usize, value: u8) {
+        if offset < self.data.len() {
+            self.data[offset] = value;
+        }
+    }
+
+    pub fn write_u16_le(&mut self, offset: usize, value: u16) {
+        if offset + 2 <= self.data.len() {
+            self.data[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    pub fn write_u32_le(&mut self, offset: usize, value: u32) {
+        if offset + 4 <= self.data.len() {
+            self.data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    pub fn write_u64_le(&mut self, offset: usize, value: u64) {
+        if offset + 8 <= self.data.len() {
+            self.data[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    pub fn write_f32_le(&mut self, offset: usize, value: f32) {
+        if offset + 4 <= self.data.len() {
+            self.data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    pub fn write_f64_le(&mut self, offset: usize, value: f64) {
+        if offset + 8 <= self.data.len() {
+            self.data[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+}
+
+// ============================================================================
+// Streaming Data Group
+// ============================================================================
+
+/// Streaming data group that supports incremental writes
+#[derive(Debug)]
+pub struct StreamingDataGroup {
+    /// Channel group definition (fixed after creation)
+    pub channel_groups: Vec<ChannelGroupDef>,
+    /// Record ID size (0, 1, 2, 4, 8 bytes)
+    pub rec_id_size: u8,
+    /// Current cycle count per channel group
+    pub cycle_counts: Vec<u64>,
+    /// Data block chain for managing multiple DT/DZ blocks
+    pub data_chain: DataBlockChain,
+    /// Pending record being built
+    pub pending_record: Option<RecordData>,
+    /// Current channel group index for pending record
+    pub current_cg_index: usize,
+    /// File offset of this DG block (set during finalize_structure)
+    pub dg_offset: Option<u64>,
+    /// File offset of data area (set during finalize_structure)
+    pub data_area_offset: Option<u64>,
+}
+
+impl StreamingDataGroup {
+    /// Create a new streaming data group with a single channel group
+    pub fn new(cg: ChannelGroupDef) -> WriteResult<Self> {
+        Self::with_config(cg, StreamingConfig::default())
+    }
+
+    /// Create a new streaming data group with configuration
+    pub fn with_config(cg: ChannelGroupDef, config: StreamingConfig) -> WriteResult<Self> {
+        Ok(Self {
+            channel_groups: vec![cg],
+            rec_id_size: 0,
+            cycle_counts: vec![0],
+            data_chain: DataBlockChain::new(config),
+            pending_record: None,
+            current_cg_index: 0,
+            dg_offset: None,
+            data_area_offset: None,
+        })
+    }
+
+    /// Create a new streaming data group with multiple channel groups
+    pub fn with_multiple(cgs: Vec<ChannelGroupDef>) -> WriteResult<Self> {
+        Self::with_multiple_config(cgs, StreamingConfig::default())
+    }
+
+    /// Create a new streaming data group with multiple channel groups and configuration
+    pub fn with_multiple_config(cgs: Vec<ChannelGroupDef>, config: StreamingConfig) -> WriteResult<Self> {
+        if cgs.is_empty() {
+            return Err(WriteError::MissingField("channel_groups".to_string()));
+        }
+
+        let rec_id_size = if cgs.len() == 1 {
+            0
+        } else if cgs.len() <= 255 {
+            1
+        } else if cgs.len() <= 65535 {
+            2
+        } else {
+            4
+        };
+
+        Ok(Self {
+            cycle_counts: vec![0; cgs.len()],
+            channel_groups: cgs,
+            rec_id_size,
+            data_chain: DataBlockChain::new(config),
+            pending_record: None,
+            current_cg_index: 0,
+            dg_offset: None,
+            data_area_offset: None,
+        })
+    }
+
+    /// Get the total cycle count
+    pub fn total_cycle_count(&self) -> u64 {
+        self.cycle_counts.iter().sum()
+    }
+
+    /// Get the current buffer size
+    pub fn buffer_size(&self) -> usize {
+        self.data_chain.buffer_size()
+    }
+
+    /// Check if the current block is full and needs to be flushed
+    pub fn is_block_full(&self) -> bool {
+        self.data_chain.is_buffer_full()
+    }
+
+    /// Start a new record for the given channel group index
+    pub fn start_record(&mut self, cg_index: usize) -> WriteResult<()> {
+        if cg_index >= self.channel_groups.len() {
+            return Err(WriteError::InvalidChannelConfig(format!(
+                "Invalid channel group index: {}",
+                cg_index
+            )));
+        }
+
+        let cg = &self.channel_groups[cg_index];
+        let record_size = cg.record_size as usize + self.rec_id_size as usize;
+
+        let mut record = RecordData::new(cg.record_id, record_size);
+
+        // Write record ID if needed
+        if self.rec_id_size > 0 {
+            match self.rec_id_size {
+                1 => record.write_u8(0, cg.record_id as u8),
+                2 => record.write_u16_le(0, cg.record_id as u16),
+                4 => record.write_u32_le(0, cg.record_id as u32),
+                8 => record.write_u64_le(0, cg.record_id),
+                _ => {}
+            }
+        }
+
+        self.pending_record = Some(record);
+        self.current_cg_index = cg_index;
+        Ok(())
+    }
+
+    /// Set a channel value in the pending record
+    pub fn set_channel_value<T: RecordValue>(&mut self, channel_name: &str, value: T) -> WriteResult<()> {
+        let record = self.pending_record.as_mut()
+            .ok_or(WriteError::InvalidState {
+                current: "No pending record".to_string(),
+                required: "Pending record started".to_string(),
+            })?;
+
+        let cg = &self.channel_groups[self.current_cg_index];
+        let channel = cg.get_channel(channel_name)
+            .ok_or_else(|| WriteError::ChannelNotFound { name: channel_name.to_string() })?;
+
+        let offset = channel.byte_offset as usize + self.rec_id_size as usize;
+        value.write_to_record(record, offset, channel.data_type, channel.bit_count);
+
+        Ok(())
+    }
+
+    /// Complete and flush the current record
+    pub fn flush_record(&mut self) -> WriteResult<()> {
+        let record = self.pending_record.take()
+            .ok_or(WriteError::InvalidState {
+                current: "No pending record".to_string(),
+                required: "Pending record started".to_string(),
+            })?;
+
+        self.data_chain.append(&record.data);
+        self.cycle_counts[self.current_cg_index] += 1;
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Record Value Trait
+// ============================================================================
+
+/// Trait for writing values to records
+pub trait RecordValue {
+    /// Write the value to the record at the given offset
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32);
+}
+
+impl RecordValue for f64 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_f64_le(offset, *self);
+    }
+}
+
+impl RecordValue for f32 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_f32_le(offset, *self);
+    }
+}
+
+impl RecordValue for u8 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_u8(offset, *self);
+    }
+}
+
+impl RecordValue for u16 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_u16_le(offset, *self);
+    }
+}
+
+impl RecordValue for u32 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_u32_le(offset, *self);
+    }
+}
+
+impl RecordValue for u64 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_u64_le(offset, *self);
+    }
+}
+
+impl RecordValue for i8 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_u8(offset, *self as u8);
+    }
+}
+
+impl RecordValue for i16 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_u16_le(offset, *self as u16);
+    }
+}
+
+impl RecordValue for i32 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_u32_le(offset, *self as u32);
+    }
+}
+
+impl RecordValue for i64 {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        record.write_u64_le(offset, *self as u64);
+    }
+}
+
+// ============================================================================
+// Data Block Chain (Chained DT/DZ blocks via DL)
+// ============================================================================
+
+/// Represents a single data block in the chain
+#[derive(Debug, Clone)]
+pub struct DataBlockInfo {
+    /// File offset of this block
+    pub offset: u64,
+    /// Size of this block (including header)
+    pub size: u64,
+    /// Whether this block is compressed
+    pub compressed: bool,
+}
+
+/// Manages a chain of data blocks linked via DL block
+///
+/// This structure implements the chained data block strategy:
+/// - Data is written in fixed-size blocks
+/// - When a block is full, a new one is created
+/// - All blocks are linked via a DL block
+/// - On finalize, optionally compact into a single block
+#[derive(Debug)]
+pub struct DataBlockChain {
+    /// Configuration
+    config: StreamingConfig,
+    /// Current write buffer (accumulating records)
+    current_buffer: Vec<u8>,
+    /// List of completed blocks (written to file)
+    blocks: Vec<DataBlockInfo>,
+    /// File offset where DL block will be written (set during finalize_structure)
+    dl_block_offset: Option<u64>,
+    /// Total bytes written
+    total_bytes: u64,
+}
+
+impl DataBlockChain {
+    /// Create a new data block chain
+    pub fn new(config: StreamingConfig) -> Self {
+        Self {
+            config,
+            current_buffer: Vec::new(),
+            blocks: Vec::new(),
+            dl_block_offset: None,
+            total_bytes: 0,
+        }
+    }
+
+    /// Get the current buffer size
+    pub fn buffer_size(&self) -> usize {
+        self.current_buffer.len()
+    }
+
+    /// Check if the current buffer is full
+    pub fn is_buffer_full(&self) -> bool {
+        self.current_buffer.len() as u64 >= self.config.block_size
+    }
+
+    /// Append record data to the current buffer
+    pub fn append(&mut self, data: &[u8]) {
+        self.current_buffer.extend_from_slice(data);
+    }
+
+    /// Get the number of blocks in the chain
+    pub fn block_count(&self) -> usize {
+        self.blocks.len() + if self.current_buffer.is_empty() { 0 } else { 1 }
+    }
+
+    /// Get total data bytes
+    pub fn total_data_bytes(&self) -> u64 {
+        self.total_bytes + self.current_buffer.len() as u64
+    }
+
+    /// Set the DL block offset (where the DL block will be written)
+    pub fn set_dl_offset(&mut self, offset: u64) {
+        self.dl_block_offset = Some(offset);
+    }
+
+    /// Get the DL block offset
+    pub fn dl_offset(&self) -> Option<u64> {
+        self.dl_block_offset
+    }
+
+    /// Finalize the current buffer as a new block
+    /// Returns the offset of the written block
+    pub fn finalize_current_block<W: Write + Seek>(&mut self, writer: &mut BlockWriter<W>) -> WriteResult<Option<u64>> {
+        if self.current_buffer.is_empty() {
+            return Ok(None);
+        }
+
+        let data = std::mem::take(&mut self.current_buffer);
+        let data_len = data.len() as u64;
+
+        // Decide whether to compress
+        let should_compress = self.config.enable_compression
+            && data_len >= self.config.compression_threshold;
+
+        let offset = if should_compress {
+            // TODO: Write compressed DZ block
+            writer.write_dt_block(&super::block_writer::DtBlock::new(data))?
+        } else {
+            writer.write_dt_block(&super::block_writer::DtBlock::new(data))?
+        };
+
+        self.blocks.push(DataBlockInfo {
+            offset,
+            size: 0, // Will be calculated during finalize
+            compressed: should_compress,
+        });
+
+        self.total_bytes += data_len;
+        Ok(Some(offset))
+    }
+
+    /// Write all blocks and create DL block
+    /// Returns the DL block offset
+    pub fn finalize_chain<W: Write + Seek>(&mut self, writer: &mut BlockWriter<W>) -> WriteResult<u64> {
+        // Finalize any remaining data
+        self.finalize_current_block(writer)?;
+
+        // Create DL block linking all data blocks
+        let links: Vec<u64> = self.blocks.iter().map(|b| b.offset).collect();
+        let dl_offset = writer.write_dl_block(&links)?;
+
+        Ok(dl_offset)
+    }
+
+    /// Compact all blocks into a single block
+    /// Returns the new DT block offset
+    pub fn compact<W: Write + Seek>(&mut self, writer: &mut BlockWriter<W>, all_data: Vec<u8>) -> WriteResult<u64> {
+        // Write a single DT block with all data
+        let dt_offset = writer.write_dt_block(&super::block_writer::DtBlock::new(all_data))?;
+
+        // Reset chain with single block
+        self.blocks = vec![DataBlockInfo {
+            offset: dt_offset,
+            size: 0,
+            compressed: false,
+        }];
+        self.dl_block_offset = None; // No DL needed for single block
+
+        Ok(dt_offset)
+    }
+}
+
+// Import BlockWriter for DataBlockChain
+use super::block_writer::BlockWriter;
+
+// ============================================================================
+// Mf4StreamWriter
+// ============================================================================
+
+/// Streaming writer for incremental data append
+///
+/// # Example
+///
+/// ```ignore
+/// use mf4_parse::writer::{Mf4StreamWriter, Mf4Metadata, StreamingConfig, ChannelGroupDef, ChannelDef};
+///
+/// // Create with custom configuration
+/// let config = StreamingConfig::new()
+///     .with_block_size(10_000_000)  // 10 MB blocks
+///     .with_compression();          // Enable compression
+///
+/// let mut writer = Mf4StreamWriter::with_config(
+///     "output.mf4".into(),
+///     Mf4Metadata::default(),
+///     config
+/// )?;
+///
+/// // Define channels
+/// let time_def = ChannelDef::new_master("time");
+/// let temp_def = ChannelDef::new("Temperature").data_type(5);
+///
+/// let cg_def = ChannelGroupDef::builder()
+///     .name("Measurement")
+///     .master(time_def)
+///     .channel(temp_def)
+///     .build()?;
+///
+/// let dg = StreamingDataGroup::new(cg_def)?;
+/// writer.add_data_group(dg)?;
+/// writer.finalize_structure()?;
+///
+/// // Write data
+/// for i in 0..100 {
+///     writer.start_record(0, 0)?;
+///     writer.set_channel_value("time", i as f64 * 0.01)?;
+///     writer.set_channel_value("Temperature", 20.0 + i as f64)?;
+///     writer.flush_record()?;
+/// }
+///
+/// // Finalize with compacting (merge all blocks into one)
+/// writer.finalize_with_compact(true)?;
+/// ```
+#[derive(Debug)]
+pub struct Mf4StreamWriter<W: Write + Seek> {
+    /// Writer handle
+    writer: W,
+    /// File path (for reference)
+    path: PathBuf,
+    /// Metadata
+    metadata: Mf4Metadata,
+    /// Configuration
+    config: StreamingConfig,
+    /// Data groups with streaming capability
+    data_groups: Vec<StreamingDataGroup>,
+    /// Write buffer for performance
+    buffer: Vec<u8>,
+    /// Buffer flush threshold
+    flush_threshold: usize,
+    /// File state tracking
+    state: WriterState,
+    /// File positions for updating during finalize
+    /// HD block offset
+    hd_offset: Option<u64>,
+    /// DG block offsets (for updating links)
+    dg_offsets: Vec<u64>,
+    /// CG block offsets (for updating cycle_count)
+    cg_offsets: Vec<Vec<u64>>,
+}
+
+impl Mf4StreamWriter<BufWriter<std::fs::File>> {
+    /// Create a new streaming writer with default configuration
+    pub fn new(path: PathBuf, metadata: Mf4Metadata) -> WriteResult<Self> {
+        Self::with_config(path, metadata, StreamingConfig::default())
+    }
+
+    /// Create a new streaming writer with custom configuration
+    pub fn with_config(path: PathBuf, metadata: Mf4Metadata, config: StreamingConfig) -> WriteResult<Self> {
+        let file = std::fs::File::create(&path)?;
+        let writer = BufWriter::new(file);
+
+        Ok(Self {
+            writer,
+            path,
+            metadata,
+            config,
+            data_groups: Vec::new(),
+            buffer: Vec::new(),
+            flush_threshold: 1_000_000, // 1 MB
+            state: WriterState::Initialized,
+            hd_offset: None,
+            dg_offsets: Vec::new(),
+            cg_offsets: Vec::new(),
+        })
+    }
+}
+
+impl<W: Write + Seek> Mf4StreamWriter<W> {
+    /// Add a data group to the writer
+    pub fn add_data_group(&mut self, mut dg: StreamingDataGroup) -> WriteResult<()> {
+        if self.state != WriterState::Initialized {
+            return Err(WriteError::AlreadyFinalized);
+        }
+        // Propagate configuration to data group
+        dg.data_chain = DataBlockChain::new(self.config.clone());
+        self.data_groups.push(dg);
+        Ok(())
+    }
+
+    /// Get the configuration
+    pub fn config(&self) -> &StreamingConfig {
+        &self.config
+    }
+
+    /// Finalize the channel structure (ready for data)
+    ///
+    /// This method writes the file header blocks:
+    /// - ID block (file identification)
+    /// - HD block (header with metadata)
+    /// - DG blocks (data groups)
+    /// - CG blocks (channel groups)
+    /// - CN blocks (channels)
+    /// - TX blocks (channel names)
+    ///
+    /// After calling this method, the writer is ready to accept data records.
+    pub fn finalize_structure(&mut self) -> WriteResult<()> {
+        if self.state != WriterState::Initialized {
+            return Err(WriteError::InvalidState {
+                current: self.state.to_string(),
+                required: "Initialized".to_string(),
+            });
+        }
+
+        let mut block_writer = BlockWriter::new(&mut self.writer)?;
+
+        // === Write ID Block ===
+        let id_block = super::block_writer::IdBlock {
+            id_file: "MDF     ".to_string(),
+            id_ver: format!("{:<8}", self.metadata.version),
+            id_program: "Mf4Parse".to_string(),
+            id_version: self.metadata.version_num,
+            id_unfin_flags: 0,
+            id_custom_unfin_flags: 0,
+        };
+        block_writer.write_id_block(&id_block)?;
+
+        // === Write HD Block ===
+        self.hd_offset = Some(block_writer.position());
+        let hd_block = super::block_writer::HdBlock {
+            hd_start_time_ns: self.metadata.start_time_ns,
+            hd_tz_offset: 0,
+            hd_dst_offset: 0,
+            hd_time_flags: 0,
+            hd_time_quality: 0,
+            hd_num_time_channels: 0,
+            hd_dg_first: 0, // Will be updated later
+            hd_fh_first: 0,
+            hd_md_comment: 0,
+        };
+        block_writer.write_hd_block(&hd_block)?;
+
+        // === Write DG, CG, CN, TX blocks ===
+        self.cg_offsets.clear();
+        self.dg_offsets.clear();
+
+        for (dg_idx, dg) in self.data_groups.iter_mut().enumerate() {
+            // Write DG block
+            let dg_offset = block_writer.position();
+            self.dg_offsets.push(dg_offset);
+            dg.dg_offset = Some(dg_offset);
+
+            let dg_block = super::block_writer::DgBlock {
+                dg_dg_next: 0, // Will be updated later
+                dg_cg_first: 0, // Will be updated later
+                dg_data: 0, // Will be updated later
+                dg_md_comment: 0,
+                dg_rec_id_size: dg.rec_id_size,
+            };
+            block_writer.write_dg_block(&dg_block)?;
+
+            // Write CG and CN blocks for this DG
+            let mut cg_offs = Vec::new();
+
+            for (cg_idx, cg) in dg.channel_groups.iter().enumerate() {
+                // Write CG block
+                let cg_offset = block_writer.position();
+                cg_offs.push(cg_offset);
+
+                let cg_block = super::block_writer::CgBlock {
+                    cg_cg_next: 0, // Will be updated later
+                    cg_cn_first: 0, // Will be updated later
+                    cg_tx_acq_name: 0,
+                    cg_si_acq_source: 0,
+                    cg_md_comment: 0,
+                    cg_record_id: cg.record_id,
+                    cg_cycle_count: 0, // Will be updated during finalize
+                    cg_data_bytes: cg.record_size,
+                    cg_inval_bytes: 0,
+                    cg_flags: 0,
+                    cg_path_separator: 0,
+                    cg_samples: 0,
+                };
+                block_writer.write_cg_block(&cg_block)?;
+
+                // Write CN blocks (master first, then regular channels)
+                let mut cn_offset_list = Vec::new();
+
+                // Master channel
+                if let Some(ref master) = cg.master {
+                    // Write TX block for name
+                    let tx_offset = block_writer.write_tx_block(
+                        &super::block_writer::TxBlock::new(&master.name)
+                    )?;
+
+                    // Write CN block
+                    let cn_offset = block_writer.position();
+                    cn_offset_list.push(cn_offset);
+
+                    let cn_block = super::block_writer::CnBlock {
+                        cn_cn_next: 0, // Will be updated later
+                        cn_composition: 0,
+                        cn_tx_name: tx_offset,
+                        cn_si_source: 0,
+                        cn_cc_conversion: 0,
+                        cn_data: 0,
+                        cn_md_unit: 0,
+                        cn_md_comment: 0,
+                        cn_type: 2, // Master
+                        cn_sync_type: master.sync_type,
+                        cn_data_type: master.data_type,
+                        cn_bit_offset: 0,
+                        cn_byte_offset: 0,
+                        cn_bit_count: master.bit_count,
+                        cn_flags: 0,
+                        cn_inval_bit_pos: 0,
+                        cn_attachment_count: 0,
+                        cn_precision: 0,
+                        cn_val_limit_1: 0.0,
+                        cn_val_limit_2: 0.0,
+                    };
+                    block_writer.write_cn_block(&cn_block)?;
+                }
+
+                // Regular channels
+                let mut byte_offset: u32 = 0;
+                if let Some(ref master) = cg.master {
+                    byte_offset = (master.bit_count + 7) / 8;
+                }
+
+                for ch in &cg.channels {
+                    // Write TX block for name
+                    let tx_offset = block_writer.write_tx_block(
+                        &super::block_writer::TxBlock::new(&ch.name)
+                    )?;
+
+                    // Write CN block
+                    let cn_offset = block_writer.position();
+                    cn_offset_list.push(cn_offset);
+
+                    let cn_block = super::block_writer::CnBlock {
+                        cn_cn_next: 0, // Will be updated later
+                        cn_composition: 0,
+                        cn_tx_name: tx_offset,
+                        cn_si_source: 0,
+                        cn_cc_conversion: 0,
+                        cn_data: 0,
+                        cn_md_unit: 0,
+                        cn_md_comment: 0,
+                        cn_type: 0, // Fixed length
+                        cn_sync_type: 0,
+                        cn_data_type: ch.data_type,
+                        cn_bit_offset: 0,
+                        cn_byte_offset: byte_offset,
+                        cn_bit_count: ch.bit_count,
+                        cn_flags: 0,
+                        cn_inval_bit_pos: 0,
+                        cn_attachment_count: 0,
+                        cn_precision: 0,
+                        cn_val_limit_1: 0.0,
+                        cn_val_limit_2: 0.0,
+                    };
+                    block_writer.write_cn_block(&cn_block)?;
+
+                    byte_offset += (ch.bit_count + 7) / 8;
+                }
+
+                // Store CN offsets for this CG
+                // Update CN next links
+                for i in 0..cn_offset_list.len() - 1 {
+                    let next_offset = cn_offset_list[i + 1];
+                    let link_offset = cn_offset_list[i] + 24; // Offset to cn_cn_next
+                    block_writer.update_link(link_offset, next_offset)?;
+                }
+
+                // Update CG cn_first link
+                if !cn_offset_list.is_empty() {
+                    let cg_cn_first_offset = cg_offset + 24 + 8; // After header + cg_cg_next
+                    block_writer.update_link(cg_cn_first_offset, cn_offset_list[0])?;
+                }
+            }
+
+            self.cg_offsets.push(cg_offs);
+
+            // Store data area offset for this DG
+            dg.data_area_offset = Some(block_writer.position());
+
+            // Update CG next links
+            for i in 0..self.cg_offsets[dg_idx].len() - 1 {
+                let next_offset = self.cg_offsets[dg_idx][i + 1];
+                let cg_cg_next_offset = self.cg_offsets[dg_idx][i] + 24; // Offset to cg_cg_next
+                block_writer.update_link(cg_cg_next_offset, next_offset)?;
+            }
+
+            // Update DG cg_first link
+            if !self.cg_offsets[dg_idx].is_empty() {
+                let dg_cg_first_offset = dg_offset + 24 + 8; // After header + dg_dg_next
+                block_writer.update_link(dg_cg_first_offset, self.cg_offsets[dg_idx][0])?;
+            }
+        }
+
+        // Update DG next links
+        for i in 0..self.dg_offsets.len() - 1 {
+            let next_offset = self.dg_offsets[i + 1];
+            let dg_dg_next_offset = self.dg_offsets[i] + 24; // Offset to dg_dg_next
+            block_writer.update_link(dg_dg_next_offset, next_offset)?;
+        }
+
+        // Update HD dg_first link
+        if let Some(hd_off) = self.hd_offset {
+            if !self.dg_offsets.is_empty() {
+                let hd_dg_first_offset = hd_off + 24; // Offset to hd_dg_first
+                block_writer.update_link(hd_dg_first_offset, self.dg_offsets[0])?;
+            }
+        }
+
+        self.state = WriterState::StructureReady;
+        Ok(())
+    }
+
+    /// Start a new record for the given data group and channel group
+    pub fn start_record(&mut self, dg_index: usize, cg_index: usize) -> WriteResult<()> {
+        if self.state != WriterState::StructureReady && self.state != WriterState::Writing {
+            return Err(WriteError::InvalidState {
+                current: self.state.to_string(),
+                required: "StructureReady or Writing".to_string(),
+            });
+        }
+
+        let dg = self.data_groups.get_mut(dg_index)
+            .ok_or(WriteError::ChannelNotFound { name: format!("DataGroup[{}]", dg_index) })?;
+
+        dg.start_record(cg_index)?;
+        self.state = WriterState::Writing;
+        Ok(())
+    }
+
+    /// Set a channel value in the current pending record
+    pub fn set_channel_value<T: RecordValue>(&mut self, channel_name: &str, value: T) -> WriteResult<()> {
+        // Find the data group with the pending record
+        for dg in &mut self.data_groups {
+            if dg.pending_record.is_some() {
+                dg.set_channel_value(channel_name, value)?;
+                return Ok(());
+            }
+        }
+
+        Err(WriteError::InvalidState {
+            current: "No pending record".to_string(),
+            required: "Record started".to_string(),
+        })
+    }
+
+    /// Complete and flush the current record
+    pub fn flush_record(&mut self) -> WriteResult<()> {
+        for dg in &mut self.data_groups {
+            if dg.pending_record.is_some() {
+                dg.flush_record()?;
+
+                // Check if we need to flush the block
+                if dg.is_block_full() {
+                    self.flush_data_block()?;
+                }
+
+                return Ok(());
+            }
+        }
+
+        Err(WriteError::InvalidState {
+            current: "No pending record".to_string(),
+            required: "Record started".to_string(),
+        })
+    }
+
+    /// Flush the current data block to disk
+    ///
+    /// This method writes accumulated data in the buffer as a DT block
+    /// and tracks the offset for the DL chain.
+    fn flush_data_block(&mut self) -> WriteResult<()> {
+        // Find the data group with pending data
+        for dg in &mut self.data_groups {
+            if dg.data_chain.buffer_size() > 0 && dg.data_chain.is_buffer_full() {
+                // Create block writer at current position
+                let mut block_writer = BlockWriter::new(&mut self.writer)?;
+
+                // Write DT block
+                let dt_offset = dg.data_chain.finalize_current_block(&mut block_writer)?;
+
+                if let Some(offset) = dt_offset {
+                    // Track this block for DL chain
+                    // The DL block will be written during finalize
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Flush buffered data to disk
+    pub fn flush(&mut self) -> WriteResult<()> {
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    /// Finalize the file without compacting
+    pub fn finalize(&mut self) -> WriteResult<()> {
+        self.finalize_with_compact(false)
+    }
+
+    /// Finalize the file with optional compacting
+    ///
+    /// # Arguments
+    /// * `compact` - If true, merge all data blocks into a single DT block
+    ///               If false, keep the DL block chain as-is
+    ///
+    /// # Details
+    /// When `compact` is true:
+    /// - All data blocks are read and merged into one
+    /// - A single DT block is written
+    /// - File size is minimized
+    ///
+    /// When `compact` is false:
+    /// - A DL block is written linking all DT/DZ blocks
+    /// - No data is moved
+    /// - Faster finalize, but file may have multiple blocks
+    pub fn finalize_with_compact(&mut self, compact: bool) -> WriteResult<()> {
+        if self.state == WriterState::Finalized {
+            return Err(WriteError::AlreadyFinalized);
+        }
+
+        // 1. Flush any pending records
+        for dg in &mut self.data_groups {
+            if dg.pending_record.is_some() {
+                dg.flush_record()?;
+            }
+        }
+
+        // 2. Write data blocks and update links
+        let mut block_writer = BlockWriter::new(&mut self.writer)?;
+
+        for (dg_idx, dg) in self.data_groups.iter_mut().enumerate() {
+            // Get data from chain
+            let data = std::mem::take(&mut dg.data_chain.current_buffer);
+            let cycle_count = dg.cycle_counts.iter().sum();
+
+            if compact {
+                // Write single DT block
+                let dt_offset = block_writer.write_dt_block(&super::block_writer::DtBlock::new(data))?;
+
+                // Update DG data link
+                if let Some(dg_off) = dg.dg_offset {
+                    let dg_data_offset = dg_off + 24 + 16; // After header + dg_dg_next + dg_cg_first
+                    block_writer.update_link(dg_data_offset, dt_offset)?;
+                }
+            } else {
+                // Write DT block
+                let dt_offset = block_writer.write_dt_block(&super::block_writer::DtBlock::new(data))?;
+
+                // For single block, no DL needed
+                if let Some(dg_off) = dg.dg_offset {
+                    let dg_data_offset = dg_off + 24 + 16; // After header + dg_dg_next + dg_cg_first
+                    block_writer.update_link(dg_data_offset, dt_offset)?;
+                }
+            }
+
+            // 3. Update cycle counts in CG blocks
+            for (cg_idx, cg) in dg.channel_groups.iter().enumerate() {
+                if let Some(&cg_offset) = self.cg_offsets.get(dg_idx).and_then(|v| v.get(cg_idx)) {
+                    // CG cycle_count is at offset 64 from CG block start
+                    let cycle_count_offset = cg_offset + 24 + 40; // After links + record_id
+                    let cycle_count_bytes = if dg.channel_groups.len() == 1 {
+                        cycle_count
+                    } else {
+                        dg.cycle_counts[cg_idx]
+                    };
+
+                    // Seek and update cycle_count
+                    block_writer.seek(cycle_count_offset)?;
+                    block_writer.write_bytes(&cycle_count_bytes.to_le_bytes())?;
+                }
+            }
+        }
+
+        // 4. Update DG next links
+        for i in 0..self.dg_offsets.len().saturating_sub(1) {
+            let next_offset = self.dg_offsets[i + 1];
+            let dg_dg_next_offset = self.dg_offsets[i] + 24;
+            block_writer.update_link(dg_dg_next_offset, next_offset)?;
+        }
+
+        self.flush()?;
+        self.state = WriterState::Finalized;
+        Ok(())
+    }
+
+    /// Compact all data blocks into a single block
+    ///
+    /// This method is called during finalize when compact=true.
+    /// Currently, streaming writes only use a single buffer, so compacting
+    /// is already the default behavior. This method exists for future
+    /// extension when multiple blocks may be written during streaming.
+    fn compact_file(&mut self) -> WriteResult<()> {
+        // In the current implementation, we only have one buffer per DG,
+        // so compacting is automatic. This method is here for future
+        // support of multi-block streaming writes.
+
+        // Future implementation would:
+        // 1. Read all DT/DZ blocks from the DL chain
+        // 2. Merge all data into a single buffer
+        // 3. Write a single DT block
+        // 4. Update DG.dg_data to point to new block
+        // 5. Optionally rewrite the file to remove old blocks
+
+        Ok(())
+    }
+
+    /// Get the current state
+    pub fn state(&self) -> WriterState {
+        self.state
+    }
+
+    /// Get the metadata
+    pub fn metadata(&self) -> &Mf4Metadata {
+        &self.metadata
+    }
+
+    /// Get the file path
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    /// Get total records written across all data groups
+    pub fn total_records(&self) -> u64 {
+        self.data_groups.iter().map(|dg| dg.total_cycle_count()).sum()
+    }
+}

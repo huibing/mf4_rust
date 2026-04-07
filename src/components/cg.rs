@@ -102,9 +102,9 @@ pub mod channelgroup {
                 }
                 //name.push_str(cn.get_name());   in case of bus event, channel name is not used
                 if !cn.get_source().get_name().is_empty() {
-                    name.push_str(format!("{}", cn.get_source().get_name()).as_str());
+                    name.push_str(cn.get_source().get_name().to_string().as_str());
                 } else if !cn.get_source().get_path().is_empty() {
-                    name.push_str(format!("{}", cn.get_source().get_path()).as_str());
+                    name.push_str(cn.get_source().get_path().to_string().as_str());
                 } else {/* do nothing */}
                 cn.set_name(name);   // change name for Bus Logging to avoid name duplication
             }

@@ -5,3 +5,6 @@ Cargo.lock
 *.dat
 .vscode
 *.svg
+
+/.claude
+/.vscode
