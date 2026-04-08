@@ -322,6 +322,12 @@ pub enum ChannelType {
     Master = 2,
     /// Virtual master channel
     VirtualMaster = 3,
+    /// Synchronization channel
+    Sync = 4,
+    /// Maximum length data channel (MLSD)
+    MaxLength = 5,
+    /// Virtual data channel
+    VirtualData = 6,
 }
 
 
@@ -349,6 +355,10 @@ pub struct ChannelBuilder {
     /// Source information
     pub source_name: Option<String>,
     pub source_path: Option<String>,
+    /// Explicit byte offset within the record (used by sort to preserve original layout)
+    pub byte_offset: Option<u32>,
+    /// Explicit bit offset within the byte (used by sort to preserve original layout)
+    pub bit_offset: Option<u8>,
 }
 
 impl ChannelBuilder {
@@ -366,6 +376,8 @@ impl ChannelBuilder {
             array_dims: None,
             source_name: None,
             source_path: None,
+            byte_offset: None,
+            bit_offset: None,
         }
     }
 
@@ -383,6 +395,8 @@ impl ChannelBuilder {
             array_dims: None,
             source_name: None,
             source_path: None,
+            byte_offset: None,
+            bit_offset: None,
         }
     }
 
@@ -447,6 +461,18 @@ impl ChannelBuilder {
         self
     }
 
+    /// Set explicit byte offset within the record (preserves original layout for sort)
+    pub fn byte_offset(mut self, offset: u32) -> Self {
+        self.byte_offset = Some(offset);
+        self
+    }
+
+    /// Set explicit bit offset within the byte (preserves original layout for sort)
+    pub fn bit_offset(mut self, offset: u8) -> Self {
+        self.bit_offset = Some(offset);
+        self
+    }
+
     /// Build the channel (validates configuration)
     pub fn build(self) -> WriteResult<Self> {
         // Validate data type
@@ -458,14 +484,13 @@ impl ChannelBuilder {
         }
 
         // Validate bit count for numeric types
-        if self.data_type <= 5 {
-            let valid_bits = [8, 16, 32, 64];
-            if !valid_bits.contains(&self.bit_count) {
-                return Err(WriteError::InvalidChannelConfig(format!(
-                    "Invalid bit count {} for numeric channel '{}'",
-                    self.bit_count, self.name
-                )));
-            }
+        // Skip validation for virtual channels (VirtualMaster, VirtualData) which may have bit_count=0
+        let is_virtual = matches!(self.cn_type, ChannelType::VirtualMaster | ChannelType::VirtualData);
+        if self.data_type <= 5 && !is_virtual && self.bit_count == 0 {
+            return Err(WriteError::InvalidChannelConfig(format!(
+                "Invalid bit count 0 for numeric channel '{}'",
+                self.name
+            )));
         }
 
         Ok(self)
@@ -621,6 +646,10 @@ pub struct ChannelGroupBuilder {
     pub flags: u16,
     /// Comment
     pub comment: Option<String>,
+    /// Invalid bytes per record (for invalidation bit support)
+    pub invalid_bytes: u32,
+    /// Explicit data bytes per record (overrides computed value from channel bit counts)
+    pub data_bytes: Option<u32>,
 }
 
 impl ChannelGroupBuilder {
@@ -634,6 +663,8 @@ impl ChannelGroupBuilder {
             master: None,
             flags: 0,
             comment: None,
+            invalid_bytes: 0,
+            data_bytes: None,
         }
     }
 
@@ -689,9 +720,29 @@ impl ChannelGroupBuilder {
         self
     }
 
+    /// Set the invalid bytes per record
+    pub fn invalid_bytes(mut self, bytes: u32) -> Self {
+        self.invalid_bytes = bytes;
+        self
+    }
+
+    /// Set the channel group flags
+    pub fn flags(mut self, flags: u16) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    /// Set explicit data bytes per record (overrides computed value)
+    pub fn data_bytes(mut self, bytes: u32) -> Self {
+        self.data_bytes = Some(bytes);
+        self
+    }
+
     /// Build the channel group (validates configuration)
     pub fn build(self) -> WriteResult<Self> {
-        if self.channels.is_empty() && self.master.is_none() {
+        // VLSD CGs (flags & 0x01) may legitimately have no channels
+        let is_vlsd = self.flags & 0x01 != 0;
+        if self.channels.is_empty() && self.master.is_none() && !is_vlsd {
             return Err(WriteError::InvalidChannelConfig(
                 "Channel group must have at least one channel".to_string(),
             ));
@@ -719,6 +770,10 @@ pub struct DataGroupBuilder {
     pub rec_id_size: u8,
     /// Comment
     pub comment: Option<String>,
+    /// Pre-built raw DT block data (bypasses per-channel interleaving)
+    pub raw_dt_data: Option<Vec<u8>>,
+    /// Cycle count override (used with raw_dt_data)
+    pub raw_cycle_count: Option<u64>,
 }
 
 impl DataGroupBuilder {
@@ -728,6 +783,8 @@ impl DataGroupBuilder {
             channel_groups: Vec::new(),
             rec_id_size: 0,
             comment: None,
+            raw_dt_data: None,
+            raw_cycle_count: None,
         }
     }
 
@@ -750,6 +807,17 @@ impl DataGroupBuilder {
     /// Set the comment
     pub fn comment(mut self, comment: &str) -> Self {
         self.comment = Some(comment.to_string());
+        self
+    }
+
+    /// Set raw DT block data directly (bypasses per-channel data interleaving).
+    ///
+    /// When set, the write method will use this data as the DT block content
+    /// instead of interleaving per-channel data. The cycle_count parameter
+    /// specifies how many records are in the data.
+    pub fn raw_dt_data(mut self, data: Vec<u8>, cycle_count: u64) -> Self {
+        self.raw_dt_data = Some(data);
+        self.raw_cycle_count = Some(cycle_count);
         self
     }
 
@@ -1123,32 +1191,37 @@ impl Mf4Builder {
             data_offsets.push(current_offset);
 
             // Advance past the data block so subsequent DGs are laid out correctly
-            let mut data_payload_size: u64 = 0;
-            for cg in &dg.channel_groups {
-                let mut record_size: u32 = 0;
-                if let Some(ref master) = cg.master {
-                    record_size += master.bit_count.div_ceil(8);
+            let data_payload_size: u64 = if let Some(ref raw_data) = dg.raw_dt_data {
+                raw_data.len() as u64
+            } else {
+                let mut payload: u64 = 0;
+                for cg in &dg.channel_groups {
+                    let mut record_size: u32 = 0;
+                    if let Some(ref master) = cg.master {
+                        record_size += master.bit_count.div_ceil(8);
+                    }
+                    for ch in &cg.channels {
+                        record_size += ch.bit_count.div_ceil(8);
+                    }
+                    let cycle_count: u64 = if let Some(ref master) = cg.master {
+                        let master_byte_size = master.bit_count.div_ceil(8) as usize;
+                        self.channel_data.get(&master.name)
+                            .map(|d| d.len() / master_byte_size)
+                            .unwrap_or(0) as u64
+                    } else if !cg.channels.is_empty() {
+                        let first_ch = &cg.channels[0];
+                        let first_byte_size = first_ch.bit_count.div_ceil(8) as usize;
+                        self.channel_data.get(&first_ch.name)
+                            .map(|d| d.len() / first_byte_size)
+                            .unwrap_or(0) as u64
+                    } else {
+                        0
+                    };
+                    let rec_prefix = dg.rec_id_size as u32;
+                    payload += cycle_count * (record_size + rec_prefix) as u64;
                 }
-                for ch in &cg.channels {
-                    record_size += ch.bit_count.div_ceil(8);
-                }
-                let cycle_count: u64 = if let Some(ref master) = cg.master {
-                    let master_byte_size = master.bit_count.div_ceil(8) as usize;
-                    self.channel_data.get(&master.name)
-                        .map(|d| d.len() / master_byte_size)
-                        .unwrap_or(0) as u64
-                } else if !cg.channels.is_empty() {
-                    let first_ch = &cg.channels[0];
-                    let first_byte_size = first_ch.bit_count.div_ceil(8) as usize;
-                    self.channel_data.get(&first_ch.name)
-                        .map(|d| d.len() / first_byte_size)
-                        .unwrap_or(0) as u64
-                } else {
-                    0
-                };
-                let rec_prefix = dg.rec_id_size as u32;
-                data_payload_size += cycle_count * (record_size + rec_prefix) as u64;
-            }
+                payload
+            };
             // DT block header = 24 bytes (id + reserved + length + link_count)
             current_offset += 24 + data_payload_size;
         }
@@ -1178,23 +1251,43 @@ impl Mf4Builder {
                 writer.seek(SeekFrom::Start(cg_offsets[dg_idx][cg_idx]))?;
 
                 // Calculate record info
-                let mut record_size: u32 = 0;
-
-                if let Some(ref master) = cg.master {
-                    record_size += master.bit_count.div_ceil(8);
-                }
-                for ch in &cg.channels {
-                    record_size += ch.bit_count.div_ceil(8);
-                }
+                // Use explicit data_bytes if set (e.g., from sort), otherwise compute from channels
+                let record_size: u32 = if let Some(db) = cg.data_bytes {
+                    db
+                } else {
+                    let mut size: u32 = 0;
+                    if let Some(ref master) = cg.master {
+                        size += master.bit_count.div_ceil(8);
+                    }
+                    for ch in &cg.channels {
+                        size += ch.bit_count.div_ceil(8);
+                    }
+                    size
+                };
 
                 // Get cycle count from data
-                // Each channel stores its own data independently, so we get the element count
-                // from the master channel (or first channel) based on its byte size
-                let cycle_count = if let Some(ref master) = cg.master {
+                // If raw_dt_data is set, use the stored cycle count
+                // Otherwise, determine from channel data sizes
+                let cycle_count = if let Some(raw_count) = dg.raw_cycle_count {
+                    raw_count
+                } else if let Some(ref master) = cg.master {
                     let master_byte_size = master.bit_count.div_ceil(8) as u64;
-                    self.channel_data.get(&master.name)
-                        .map(|d| d.len() as u64 / master_byte_size)
-                        .unwrap_or(0)
+                    if master_byte_size > 0 {
+                        self.channel_data.get(&master.name)
+                            .map(|d| d.len() as u64 / master_byte_size)
+                            .unwrap_or(0)
+                    } else {
+                        // Virtual master with bit_count=0: use first regular channel
+                        cg.channels.iter().find_map(|ch| {
+                            let ch_byte_size = ch.bit_count.div_ceil(8) as u64;
+                            if ch_byte_size > 0 {
+                                self.channel_data.get(&ch.name)
+                                    .map(|d| d.len() as u64 / ch_byte_size)
+                            } else {
+                                None
+                            }
+                        }).unwrap_or(0)
+                    }
                 } else if !cg.channels.is_empty() {
                     let first_ch = &cg.channels[0];
                     let first_byte_size = first_ch.bit_count.div_ceil(8) as u64;
@@ -1219,8 +1312,9 @@ impl Mf4Builder {
                     0, // md_comment
                     cg.record_id,
                     cycle_count,
+                    cg.flags,
                     record_size,
-                    0, // invalid_bytes
+                    cg.invalid_bytes,
                 )?;
 
                 // Write TX block for CG acq_name
@@ -1282,11 +1376,11 @@ impl Mf4Builder {
                         0, // cn_data
                         0, // md_unit
                         0, // md_comment
-                        2, // cn_type = master
-                        1, // sync_type = time
+                        master.cn_type as u8,
+                        master.sync_type as u8,
                         master.data_type,
-                        0, // bit_offset
-                        0, // byte_offset
+                        master.bit_offset.unwrap_or(0), // bit_offset
+                        master.byte_offset.unwrap_or(0), // byte_offset
                         master.bit_count,
                     )?;
                     cn_idx += 1;
@@ -1429,8 +1523,9 @@ impl Mf4Builder {
                     writer.seek(SeekFrom::Start(cn_offsets[dg_idx][cg_idx][cn_idx]))?;
                     let cn_next = if cn_idx + 1 < cn_offsets[dg_idx][cg_idx].len() { cn_offsets[dg_idx][cg_idx][cn_idx + 1] } else { 0 };
 
-                    // Use cumulative byte offset for this channel
-                    let byte_offset = cumulative_byte_offset;
+                    // Use explicit byte_offset if set, otherwise use cumulative
+                    let byte_offset = ch.byte_offset.unwrap_or(cumulative_byte_offset);
+                    let bit_offset = ch.bit_offset.unwrap_or(0);
 
                     self.write_cn_block_raw(&mut writer,
                         cn_next,
@@ -1441,10 +1536,10 @@ impl Mf4Builder {
                         0,
                         0,
                         0,
-                        0, // cn_type = fixed
-                        0, // sync_type = none
+                        ch.cn_type as u8,
+                        ch.sync_type as u8,
                         ch.data_type,
-                        0,
+                        bit_offset,
                         byte_offset,
                         ch.bit_count,
                     )?;
@@ -1460,67 +1555,86 @@ impl Mf4Builder {
         for (dg_idx, dg) in self.data_groups.iter().enumerate() {
             writer.seek(SeekFrom::Start(data_offsets[dg_idx]))?;
 
-            let rec_id_size = dg.rec_id_size as usize;
-            let mut all_data: Vec<u8> = Vec::new();
+            // Use raw DT data if provided (e.g., from sort operation)
+            let all_data = if let Some(ref raw_data) = dg.raw_dt_data {
+                raw_data.clone()
+            } else {
+                let rec_id_size = dg.rec_id_size as usize;
+                let mut all_data: Vec<u8> = Vec::new();
 
-            // Process each channel group
-            for cg in &dg.channel_groups {
-                // Calculate record size for this CG
-                let mut record_size: usize = 0;
-                let master_byte_size = cg.master.as_ref().map(|m| m.bit_count.div_ceil(8) as usize).unwrap_or(0);
-                record_size += master_byte_size;
-                let channel_byte_sizes: Vec<usize> = cg.channels.iter().map(|ch| {
-                    let size = ch.bit_count.div_ceil(8) as usize;
-                    record_size += size;
-                    size
-                }).collect();
+                // Process each channel group
+                for cg in &dg.channel_groups {
+                    // Calculate record size for this CG
+                    let mut record_size: usize = 0;
+                    let master_byte_size = cg.master.as_ref().map(|m| m.bit_count.div_ceil(8) as usize).unwrap_or(0);
+                    record_size += master_byte_size;
+                    let channel_byte_sizes: Vec<usize> = cg.channels.iter().map(|ch| {
+                        let size = ch.bit_count.div_ceil(8) as usize;
+                        record_size += size;
+                        size
+                    }).collect();
+                    let _ = record_size;
 
-                // Get cycle count from master or first channel
-                let cycle_count = if let Some(ref master) = cg.master {
-                    self.channel_data.get(&master.name).map(|d| d.len() / master_byte_size).unwrap_or(0)
-                } else if !cg.channels.is_empty() {
-                    self.channel_data.get(&cg.channels[0].name).map(|d| d.len() / channel_byte_sizes[0]).unwrap_or(0)
-                } else {
-                    0
-                };
-
-                // Write each record with optional record ID prefix
-                for cycle in 0..cycle_count {
-                    // Write record ID prefix if needed (for multiple CGs)
-                    if rec_id_size > 0 {
-                        let rec_id = cg.record_id;
-                        match rec_id_size {
-                            1 => all_data.push(rec_id as u8),
-                            2 => all_data.extend_from_slice(&(rec_id as u16).to_le_bytes()),
-                            4 => all_data.extend_from_slice(&(rec_id as u32).to_le_bytes()),
-                            8 => all_data.extend_from_slice(&rec_id.to_le_bytes()),
-                            _ => {}
+                    // Get cycle count from master or first channel
+                    let cycle_count = if let Some(ref master) = cg.master {
+                        if master_byte_size > 0 {
+                            self.channel_data.get(&master.name).map(|d| d.len() / master_byte_size).unwrap_or(0)
+                        } else {
+                            // Virtual master: use first non-zero-size channel
+                            cg.channels.iter().enumerate().find_map(|(i, _)| {
+                                if channel_byte_sizes[i] > 0 {
+                                    self.channel_data.get(&cg.channels[i].name)
+                                        .map(|d| d.len() / channel_byte_sizes[i])
+                                } else {
+                                    None
+                                }
+                            }).unwrap_or(0)
                         }
-                    }
+                    } else if !cg.channels.is_empty() && channel_byte_sizes[0] > 0 {
+                        self.channel_data.get(&cg.channels[0].name).map(|d| d.len() / channel_byte_sizes[0]).unwrap_or(0)
+                    } else {
+                        0
+                    };
 
-                    // Master channel first
-                    if let Some(ref master) = cg.master {
-                        if let Some(data) = self.channel_data.get(&master.name) {
-                            let start = cycle * master_byte_size;
-                            let end = start + master_byte_size;
-                            if end <= data.len() {
-                                all_data.extend_from_slice(&data[start..end]);
+                    // Write each record with optional record ID prefix
+                    for cycle in 0..cycle_count {
+                        // Write record ID prefix if needed (for multiple CGs)
+                        if rec_id_size > 0 {
+                            let rec_id = cg.record_id;
+                            match rec_id_size {
+                                1 => all_data.push(rec_id as u8),
+                                2 => all_data.extend_from_slice(&(rec_id as u16).to_le_bytes()),
+                                4 => all_data.extend_from_slice(&(rec_id as u32).to_le_bytes()),
+                                8 => all_data.extend_from_slice(&rec_id.to_le_bytes()),
+                                _ => {}
                             }
                         }
-                    }
-                    // Then regular channels
-                    for (ch_idx, ch) in cg.channels.iter().enumerate() {
-                        if let Some(data) = self.channel_data.get(&ch.name) {
-                            let byte_size = channel_byte_sizes[ch_idx];
-                            let start = cycle * byte_size;
-                            let end = start + byte_size;
-                            if end <= data.len() {
-                                all_data.extend_from_slice(&data[start..end]);
+
+                        // Master channel first
+                        if let Some(ref master) = cg.master {
+                            if let Some(data) = self.channel_data.get(&master.name) {
+                                let start = cycle * master_byte_size;
+                                let end = start + master_byte_size;
+                                if end <= data.len() {
+                                    all_data.extend_from_slice(&data[start..end]);
+                                }
+                            }
+                        }
+                        // Then regular channels
+                        for (ch_idx, ch) in cg.channels.iter().enumerate() {
+                            if let Some(data) = self.channel_data.get(&ch.name) {
+                                let byte_size = channel_byte_sizes[ch_idx];
+                                let start = cycle * byte_size;
+                                let end = start + byte_size;
+                                if end <= data.len() {
+                                    all_data.extend_from_slice(&data[start..end]);
+                                }
                             }
                         }
                     }
                 }
-            }
+                all_data
+            };
 
             // Check if compression should be used
             #[cfg(feature = "compression")]
@@ -1625,7 +1739,7 @@ impl Mf4Builder {
         Ok(())
     }
 
-    fn write_cg_block_raw<W: Write + Seek>(&self, writer: &mut W, cg_next: u64, cn_first: u64, tx_acq_name: u64, si_acq_source: u64, md_comment: u64, record_id: u64, cycle_count: u64, data_bytes: u32, inval_bytes: u32) -> WriteResult<()> {
+    fn write_cg_block_raw<W: Write + Seek>(&self, writer: &mut W, cg_next: u64, cn_first: u64, tx_acq_name: u64, si_acq_source: u64, md_comment: u64, record_id: u64, cycle_count: u64, flags: u16, data_bytes: u32, inval_bytes: u32) -> WriteResult<()> {
         // CG block structure:
         // Links (6): cg_cg_next, cg_cn_first, cg_tx_acq_name, cg_si_acq_source, cg_cg_master, cg_md_comment
         // Data: cg_record_id (8), cg_cycle_count (8), cg_flags (2), cg_path_separator (2), cg_reserved (4), cg_data_bytes (4), cg_inval_bytes (4)
@@ -1647,7 +1761,7 @@ impl Mf4Builder {
         // Data fields (in correct order)
         writer.write_all(&record_id.to_le_bytes())?;   // cg_record_id (8 bytes)
         writer.write_all(&cycle_count.to_le_bytes())?; // cg_cycle_count (8 bytes)
-        writer.write_all(&0u16.to_le_bytes())?;        // cg_flags (2 bytes)
+        writer.write_all(&flags.to_le_bytes())?;        // cg_flags (2 bytes)
         writer.write_all(&0u16.to_le_bytes())?;        // cg_path_separator (2 bytes)
         writer.write_all(&[0u8; 4])?;                   // cg_reserved (4 bytes)
         writer.write_all(&data_bytes.to_le_bytes())?; // cg_data_bytes (4 bytes)

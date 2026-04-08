@@ -4,6 +4,9 @@ pub mod data_serde;
 #[cfg(feature = "write")]
 pub mod writer;
 
+#[cfg(feature = "write")]
+pub mod sort;
+
 pub use crate::parser::Mf4Wrapper;
 pub use crate::data_serde::DataValue;
 pub use crate::components::dg::datagroup::ChannelLink;
@@ -728,14 +731,14 @@ pub mod parser {
         }
     }
 
-    enum FileData {
+    pub enum FileData {
         Mmap(Mmap),
         Buffer(Vec<u8>),
     }
 
     impl FileData {
     /// 返回底层数据的只读切片
-        fn as_bytes(&self) -> &[u8] {
+        pub fn as_bytes(&self) -> &[u8] {
             match self {
                 FileData::Mmap(m) => m,
                 FileData::Buffer(v) => v,
@@ -743,7 +746,7 @@ pub mod parser {
         }
     }
 
-    fn load_file(path: PathBuf) -> Result<FileData, DynError> {
+    pub fn load_file(path: PathBuf) -> Result<FileData, DynError> {
         let file = File::open(path)?;
         let metadata = file.metadata()?;
         let file_size = metadata.len();

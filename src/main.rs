@@ -1,6 +1,7 @@
 use mf4_parse::Mf4Wrapper;
 use mf4_parse::ChannelLink;
 use std::path::PathBuf;
+use std::env;
 
 
 pub fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
@@ -26,8 +27,31 @@ pub fn display_channel_info(channel_name: &str, mf4: &Mf4Wrapper) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Example: Read MF4 file and display channel info
-    let mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("test/demo.mf4"), None)?;
+    let args: Vec<String> = env::args().collect();
+
+    // Handle --sort command: mf4_parse_cli --sort <input> <output>
+    #[cfg(feature = "write")]
+    if args.len() >= 2 && args[1] == "--sort" {
+        if args.len() < 4 {
+            eprintln!("Usage: mf4_parse_cli --sort <input.mf4> <output.mf4>");
+            std::process::exit(1);
+        }
+        let input = PathBuf::from(&args[2]);
+        let output = PathBuf::from(&args[3]);
+        println!("Sorting MF4: {} -> {}", input.display(), output.display());
+        mf4_parse::sort::sort_mf4(input, output)?;
+        println!("Sort complete.");
+        return Ok(());
+    }
+
+    // Default demo mode
+    let file_path = if args.len() >= 2 && args[1] != "--sort" {
+        PathBuf::from(&args[1])
+    } else {
+        PathBuf::from("test/demo.mf4")
+    };
+
+    let mf4: Mf4Wrapper = Mf4Wrapper::new::<fn(f64)>(file_path, None)?;
 
     println!("Header time stamp: {:?}", mf4.get_time_stamp());
 
@@ -364,7 +388,7 @@ fn write_time_series_one_dg_per_cg() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     // Generate data (10 seconds)
     // ==========================================================================
-    let duration_sec = 10.0_f64;
+    let duration_sec = 100.0_f64;
 
     // Fast: 100 Hz
     let n_fast = (duration_sec / 0.01) as usize;
