@@ -2,8 +2,13 @@
 
 A Rust library for reading and writing MF4 (Measurement Data Format 4) files, which are used in automotive measurement and calibration systems (ASAM MDF standard).
 
-Standard reference: <a href="https://www.asam.net/standards/detail/mdf/wiki/">ASAM MDF</a>;
-Demo MF4 files can be accessed from <a href="https://www.asam.net/standards/detail/mdf/">here</a>.
+Standard reference: https://www.asam.net/standards/detail/mdf/wiki/
+Demo MF4 files can be accessed from https://www.asam.net/standards/detail/mdf/
+
+Recent changes (2026-04-08)
+- feat(sort): add MF4 file sort feature — adds ability to sort MF4 file blocks for deterministic reading and merging.
+- fix(cc): normalize algebraic expr math functions — improved normalization of algebraic expressions used in conversion (CC) blocks.
+- fix(writer): correct multi-DG layout and data-type constants — fixes layout issues when writing multiple DataGroups and corrects data-type constant handling.
 
 ## Features
 
@@ -48,7 +53,6 @@ Default features: `["read"]`
 - LD/FH/CH/AT blocks
 
 Most of the above features are not supported because it is difficult to obtain MF4 files with these features for development and testing. In practice, these features are rarely used by tools that generate MF4 files.
-
 
 ## Install
 
