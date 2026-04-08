@@ -2,8 +2,25 @@
 
 A Rust library for reading and writing MF4 (Measurement Data Format 4) files, which are used in automotive measurement and calibration systems (ASAM MDF standard).
 
-Standard reference: <a href="https://www.asam.net/standards/detail/mdf/wiki/">ASAM MDF</a>;
-Demo MF4 files can be accessed from <a href="https://www.asam.net/standards/detail/mdf/">here</a>.
+Standard reference: https://www.asam.net/standards/detail/mdf/wiki/
+Demo MF4 files can be accessed from https://www.asam.net/standards/detail/mdf/
+
+Recent changes (2026-04-03 ~ 2026-04-08)
+
+**2026-04-08**
+- feat(sort): add MF4 file sort feature — converts unsorted MF4 files (multiple ChannelGroups per DataGroup) into sorted format (one ChannelGroup per DataGroup).
+- fix(cc): normalize algebraic expr math functions — improved normalization of algebraic expressions used in CC blocks.
+
+**2026-04-07**
+- feat(write): add SI block support for ChannelGroupBuilder — enables source information attachment to channels.
+
+**2026-04-06**
+- fix: correct CC block data layout for Value2Text conversion — enables text-based channel value lookups.
+
+**2026-04-04 ~ 2026-04-05**
+- feat(write): implement MF4 file write functionality — complete write support with Mf4Builder (one-time) and Mf4StreamWriter (streaming).
+- perf: improve write efficiency and reduce memory allocations.
+- fix: correct data writing for multiple channel groups.
 
 ## Features
 
@@ -24,6 +41,12 @@ Demo MF4 files can be accessed from <a href="https://www.asam.net/standards/deta
 - Support strings and byte arrays
 - Support compression (Deflate, Transpose + Deflate)
 - Proper MF4 block structure (ID, HD, DG, CG, CN, TX, DT/DZ blocks)
+
+### Sorting
+- Convert unsorted MF4 files to sorted format
+- Unsorted: one DataGroup contains multiple ChannelGroups with interleaved records
+- Sorted: each DataGroup contains exactly one ChannelGroup with contiguous data
+- Useful for deterministic reading and merging MF4 files
 
 ## Feature Flags
 
@@ -48,7 +71,6 @@ Default features: `["read"]`
 - LD/FH/CH/AT blocks
 
 Most of the above features are not supported because it is difficult to obtain MF4 files with these features for development and testing. In practice, these features are rarely used by tools that generate MF4 files.
-
 
 ## Install
 
@@ -213,6 +235,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Finalize and close
     writer.finalize()?;
 
+    Ok(())
+}
+```
+
+### Sorting MF4 Files
+
+Convert unsorted MF4 files (multiple ChannelGroups per DataGroup) to sorted format:
+
+```rust
+use mf4_parse::sort::sort_mf4;
+use std::path::PathBuf;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Sort an unsorted MF4 file
+    sort_mf4(
+        PathBuf::from("unsorted.mf4"),
+        PathBuf::from("sorted.mf4")
+    )?;
+
+    println!("MF4 file sorted successfully!");
     Ok(())
 }
 ```
