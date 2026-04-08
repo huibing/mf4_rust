@@ -5,6 +5,28 @@ pub mod conversion {
     use crate::parser::{get_clean_text, get_block_desc_by_name, peek_block_type};
     use evalexpr::*;
 
+    /// Normalize MDF4 algebraic expressions for evalexpr.
+    /// MDF4 uses C-style math functions (sin, cos, etc.) while evalexpr requires math:: prefix.
+    fn normalize_algebraic_expr(expr: &str) -> String {
+        let math_funcs = [
+            "sin", "cos", "tan", "asin", "acos", "atan",
+            "sinh", "cosh", "tanh",
+            "exp", "ln", "log2", "log10",
+            "sqrt", "abs", "ceil", "floor", "round",
+        ];
+        let mut result = expr.to_string();
+        for func in &math_funcs {
+            // Replace func( with math::func( only when not already prefixed with math::
+            let pattern = format!("{}(", func);
+            let replacement = format!("math::{}(", func);
+            let already_prefixed = format!("math::{}", func);
+            // Simple replacement: first remove any existing math:: prefix, then add it
+            result = result.replace(&already_prefixed, func);
+            result = result.replace(&pattern, &replacement);
+        }
+        result
+    }
+
     #[derive(Debug, Clone, Default)]
     pub struct Conversion 
     {
@@ -88,7 +110,7 @@ pub mod conversion {
                 },
                 3 if cc_ref_count == 1 && cc_ref.len() == 1 => { // text2value
                     let text = get_clean_text(buf, cc_ref[0])?;
-                    cc_type = CcType::Algebraic(text); 
+                    cc_type = CcType::Algebraic(normalize_algebraic_expr(&text)); 
                 },
                 4|5 if cc_val.len() == (cc_val_count) as usize && cc_val.len().is_multiple_of(2) => { // table
                     let mut key: Vec<f64> = Vec::new();
