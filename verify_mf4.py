@@ -90,6 +90,10 @@ def verify_channel_data(mdf, channel_name, expected_data, tolerance=1e-10):
 
     print(f"    Sample count: {len(actual_data)}")
 
+    # Convert to native byte order for proper comparison
+    if actual_data.dtype.byteorder == '>':
+        actual_data = actual_data.astype(actual_data.dtype.newbyteorder('='))
+
     # Check data type
     print(f"    Expected dtype: {expected_data.dtype}, Actual dtype: {actual_data.dtype}")
 
@@ -146,7 +150,8 @@ def verify_conversion(mdf, channel_name, expected_texts):
 
 
 def main():
-    mf4_path = "test/time_series_demo.mf4"
+    import sys
+    mf4_path = sys.argv[1] if len(sys.argv) > 1 else "test/time_series_demo.mf4"
 
     print("=" * 60)
     print("MF4 File Verification using asammdf")
@@ -236,6 +241,5 @@ def main():
 
 
 if __name__ == "__main__":
-    import sys
     success = main()
     sys.exit(0 if success else 1)

@@ -17,6 +17,7 @@ pub const BLOCK_HEADER_SIZE: u64 = 24;
 pub mod block_id {
     pub const ID: &[u8; 8] = b"MDF     ";
     pub const HD: &[u8; 4] = b"##HD";
+    pub const FH: &[u8; 4] = b"##FH";
     pub const DG: &[u8; 4] = b"##DG";
     pub const CG: &[u8; 4] = b"##CG";
     pub const CN: &[u8; 4] = b"##CN";
@@ -95,6 +96,52 @@ pub struct HdBlock {
     pub hd_num_time_channels: u32,
 }
 
+
+// ============================================================================
+// FH Block (File History)
+// ============================================================================
+
+/// FH Block (File History) - Mandatory for MDF 4.x
+#[derive(Debug, Clone)]
+pub struct FhBlock {
+    /// Pointer to next FH block
+    pub fh_fh_next: u64,
+    /// Pointer to comment MD block
+    pub fh_md_comment: u64,
+    /// Time stamp in nanoseconds since 1970-01-01
+    pub fh_time_ns: u64,
+    /// Time zone offset in minutes
+    pub fh_tz_offset: i16,
+    /// Daylight saving time offset in minutes
+    pub fh_dst_offset: i16,
+    /// Tool ID (e.g., "Mf4Parse")
+    pub fh_tool_id: String,
+    /// Tool vendor
+    pub fh_tool_vendor: String,
+    /// Tool version
+    pub fh_tool_version: String,
+    /// User name
+    pub fh_user_name: String,
+}
+
+impl Default for FhBlock {
+    fn default() -> Self {
+        Self {
+            fh_fh_next: 0,
+            fh_md_comment: 0,
+            fh_time_ns: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64,
+            fh_tz_offset: 0,
+            fh_dst_offset: 0,
+            fh_tool_id: "Mf4Parse".to_string(),
+            fh_tool_vendor: "".to_string(),
+            fh_tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            fh_user_name: "".to_string(),
+        }
+    }
+}
 
 // ============================================================================
 // DG Block
@@ -519,6 +566,52 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
         Ok(offset)
     }
 
+    /// Write FH block (File History) - Mandatory for MDF 4.x
+    ///
+    /// FH block structure:
+    /// - Header: 24 bytes (##FH + reserved + length + link_count)
+    /// - Links (6): fh_fh_next, fh_md_comment, fh_tx_tool_id, fh_tx_tool_vendor, fh_tx_tool_version, fh_tx_user_name
+    /// - Data: fh_time_ns (8), fh_tz_offset (2), fh_dst_offset (2), fh_flags (1), fh_reserved (1)
+    /// - Total: 24 + 48 + 14 = 86 bytes, padded to 88 for alignment
+    pub fn write_fh_block(&mut self, fh: &FhBlock) -> WriteResult<u64> {
+        // Write TX blocks for strings first
+        let tx_tool_id = self.write_tx_block(&TxBlock::new(&fh.fh_tool_id))?;
+        let tx_tool_vendor = self.write_tx_block(&TxBlock::new(&fh.fh_tool_vendor))?;
+        let tx_tool_version = self.write_tx_block(&TxBlock::new(&fh.fh_tool_version))?;
+        let tx_user_name = self.write_tx_block(&TxBlock::new(&fh.fh_user_name))?;
+
+        // Re-align after TX blocks
+        let fh_offset = self.align_to_8()?;
+
+        // Block ID
+        self.writer.write_all(block_id::FH)?;
+        // Reserved (4 bytes)
+        self.writer.write_all(&[0u8; 4])?;
+        // Block length (8 bytes) - 88 bytes (86 + 2 padding)
+        self.writer.write_all(&88u64.to_le_bytes())?;
+        // Link count (6 links)
+        self.writer.write_all(&6u64.to_le_bytes())?;
+
+        // Links
+        self.writer.write_all(&fh.fh_fh_next.to_le_bytes())?;
+        self.writer.write_all(&fh.fh_md_comment.to_le_bytes())?;
+        self.writer.write_all(&tx_tool_id.to_le_bytes())?;
+        self.writer.write_all(&tx_tool_vendor.to_le_bytes())?;
+        self.writer.write_all(&tx_tool_version.to_le_bytes())?;
+        self.writer.write_all(&tx_user_name.to_le_bytes())?;
+
+        // Data fields
+        self.writer.write_all(&fh.fh_time_ns.to_le_bytes())?;
+        self.writer.write_all(&fh.fh_tz_offset.to_le_bytes())?;
+        self.writer.write_all(&fh.fh_dst_offset.to_le_bytes())?;
+        self.writer.write_all(&[0u8; 2])?; // fh_flags (1) + fh_reserved (1)
+        // Padding to 88 bytes (2 more bytes)
+        self.writer.write_all(&[0u8; 2])?;
+
+        self.current_offset = self.writer.stream_position()?;
+        Ok(fh_offset)
+    }
+
     /// Write DG block
     pub fn write_dg_block(&mut self, dg: &DgBlock) -> WriteResult<u64> {
         let offset = self.align_to_8()?;
@@ -636,13 +729,18 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
 
         let text_bytes = tx.tx_data.as_bytes();
         let text_len = text_bytes.len() + 1; // Include null terminator
-        let block_len = 24 + text_len;
+
+        // block_len must reflect the actual bytes on disk including padding,
+        // because MDF4 readers use bl_len to navigate to the next block.
+        let remainder = text_len % 8;
+        let padding = if remainder != 0 { 8 - remainder } else { 0 };
+        let block_len = 24 + text_len + padding;
 
         // Block ID
         self.writer.write_all(block_id::TX)?;
         // Reserved (4 bytes)
         self.writer.write_all(&[0u8; 4])?;
-        // Block length
+        // Block length (includes padding)
         self.writer.write_all(&(block_len as u64).to_le_bytes())?;
         // Link count (0)
         self.writer.write_all(&0u64.to_le_bytes())?;
@@ -651,9 +749,7 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
         self.writer.write_all(&[0u8; 1])?; // Null terminator
 
         // Pad to 8-byte alignment
-        let remainder = text_len % 8;
-        if remainder != 0 {
-            let padding = 8 - remainder;
+        if padding != 0 {
             self.writer.write_all(&vec![0u8; padding])?;
         }
 

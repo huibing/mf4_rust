@@ -38,7 +38,7 @@ mod tests {
         // Define channels
         let time_channel = ChannelBuilder::new_master_time("time");
         let temp_channel = ChannelBuilder::new("Temperature")
-            .data_type(5)      // FLOAT64 LE
+            .data_type(4)      // FLOAT64 LE
             .unit("°C")
             .comment("Engine temperature")
             .build().unwrap();
@@ -182,7 +182,7 @@ mod tests {
                 // Define channels
                 let time_def = ChannelDef::new_master("time");
                 let signal_def = ChannelDef::new("Signal")
-                    .data_type(5)  // FLOAT64
+                    .data_type(4)  // FLOAT64
                     .unit("V");
 
                 let cg_def = ChannelGroupDef::builder()
@@ -246,14 +246,14 @@ mod tests {
                     .name("GroupA")
                     .record_id(1)
                     .master(ChannelDef::new_master("time_a"))
-                    .channel(ChannelDef::new("SignalA").data_type(5))
+                    .channel(ChannelDef::new("SignalA").data_type(4))
                     .build().unwrap();
 
                 let cg2 = ChannelGroupDef::builder()
                     .name("GroupB")
                     .record_id(2)
                     .master(ChannelDef::new_master("time_b"))
-                    .channel(ChannelDef::new("SignalB").data_type(5))
+                    .channel(ChannelDef::new("SignalB").data_type(4))
                     .build().unwrap();
 
                 let dg = StreamingDataGroup::with_multiple(vec![cg1, cg2]).unwrap();
@@ -384,7 +384,7 @@ mod tests {
                         continue;
                     }
                     ChannelBuilder::new(ch_name)
-                        .data_type(5)  // FLOAT64 LE
+                        .data_type(4)  // FLOAT64 LE
                         .bit_count(64)
                         .build().unwrap()
                 }
@@ -785,7 +785,7 @@ mod tests {
                 crate::data_serde::DataValue::REAL(vals) => {
                     if !vals.is_empty() {
                         let ch = ChannelBuilder::new(ch_name)
-                            .data_type(5)  // FLOAT64 LE
+                            .data_type(4)  // FLOAT64 LE
                             .bit_count(64)
                             .build().unwrap();
                         channel_builders.push(ch);
@@ -1069,7 +1069,7 @@ mod tests {
 
         // Create channel with different data types
         let f64_ch = ChannelBuilder::new("float64_val")
-            .data_type(5)
+            .data_type(4)
             .bit_count(64)
             .build().unwrap();
 
@@ -1137,7 +1137,7 @@ mod tests {
         // Define channels
         let time_channel = ChannelBuilder::new_master_time("time");
         let signal1 = ChannelBuilder::new("Signal1")
-            .data_type(5)      // FLOAT64 LE
+            .data_type(4)      // FLOAT64 LE
             .unit("V")
             .comment("Test signal 1")
             .build().unwrap();
@@ -1235,7 +1235,7 @@ mod tests {
                 // Define channels
                 let time_def = ChannelDef::new_master("time");
                 let temp_def = ChannelDef::new("Temperature")
-                    .data_type(5)  // FLOAT64
+                    .data_type(4)  // FLOAT64
                     .unit("°C");
 
                 let cg_def = ChannelGroupDef::builder()
@@ -1308,7 +1308,7 @@ mod tests {
         // Define channels
         let time_channel = ChannelBuilder::new_master_time("time");
         let signal_channel = ChannelBuilder::new("CAN_Signal")
-            .data_type(5)      // FLOAT64 LE
+            .data_type(4)      // FLOAT64 LE
             .unit("m/s")
             .comment("CAN bus signal")
             .build().unwrap();

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::io::{BufWriter, Write, Seek};
 
 use super::error::{WriteError, WriteResult};
-use super::builder::Mf4Metadata;
+use super::builder::{Mf4Metadata, SourceInfoBuilder};
 
 // ============================================================================
 // Streaming Configuration
@@ -140,7 +140,7 @@ impl ChannelDef {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            data_type: 5, // FLOAT64 LE
+            data_type: 4, // FLOAT64 LE
             byte_offset: 0,
             bit_offset: 0,
             bit_count: 64,
@@ -154,7 +154,7 @@ impl ChannelDef {
     pub fn new_master(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            data_type: 5, // FLOAT64 LE
+            data_type: 4, // FLOAT64 LE
             byte_offset: 0,
             bit_offset: 0,
             bit_count: 64,
@@ -167,6 +167,12 @@ impl ChannelDef {
     /// Set the data type
     pub fn data_type(mut self, data_type: u8) -> Self {
         self.data_type = data_type;
+        self
+    }
+
+    /// Set the number of bits
+    pub fn bit_count(mut self, bit_count: u32) -> Self {
+        self.bit_count = bit_count;
         self
     }
 
@@ -191,6 +197,8 @@ impl ChannelDef {
 pub struct ChannelGroupDef {
     /// Acquisition name
     pub acq_name: String,
+    /// Acquisition source (SI block info)
+    pub acq_source: Option<SourceInfoBuilder>,
     /// Channel definitions
     pub channels: Vec<ChannelDef>,
     /// Master channel definition
@@ -226,6 +234,7 @@ impl ChannelGroupDef {
 #[derive(Debug, Clone)]
 pub struct ChannelGroupDefBuilder {
     acq_name: String,
+    acq_source: Option<SourceInfoBuilder>,
     channels: Vec<ChannelDef>,
     master: Option<ChannelDef>,
     record_id: u64,
@@ -236,6 +245,7 @@ impl ChannelGroupDefBuilder {
     pub fn new() -> Self {
         Self {
             acq_name: String::new(),
+            acq_source: None,
             channels: Vec::new(),
             master: None,
             record_id: 0,
@@ -245,6 +255,12 @@ impl ChannelGroupDefBuilder {
     /// Set the acquisition name
     pub fn name(mut self, name: &str) -> Self {
         self.acq_name = name.to_string();
+        self
+    }
+
+    /// Set the acquisition source (SI block)
+    pub fn acq_source(mut self, source: SourceInfoBuilder) -> Self {
+        self.acq_source = Some(source);
         self
     }
 
@@ -293,6 +309,7 @@ impl ChannelGroupDefBuilder {
 
         Ok(ChannelGroupDef {
             acq_name: self.acq_name,
+            acq_source: self.acq_source,
             channels,
             master,
             record_id: self.record_id,
@@ -383,10 +400,12 @@ pub struct StreamingDataGroup {
     pub cycle_counts: Vec<u64>,
     /// Data block chain for managing multiple DT/DZ blocks
     pub data_chain: DataBlockChain,
+    /// Shared data buffer. Records from all channel groups are appended here
+    /// in the order they are flushed (chronological), so the DT block is
+    /// already time-sorted as required by the MDF4 specification.
+    pub shared_buffer: Vec<u8>,
     /// Pending record being built
-    pub pending_record: Option<RecordData>,
-    /// Current channel group index for pending record
-    pub current_cg_index: usize,
+    pub pending_record: Option<(usize, RecordData)>,
     /// File offset of this DG block (set during finalize_structure)
     pub dg_offset: Option<u64>,
     /// File offset of data area (set during finalize_structure)
@@ -400,14 +419,18 @@ impl StreamingDataGroup {
     }
 
     /// Create a new streaming data group with configuration
-    pub fn with_config(cg: ChannelGroupDef, config: StreamingConfig) -> WriteResult<Self> {
+    pub fn with_config(mut cg: ChannelGroupDef, config: StreamingConfig) -> WriteResult<Self> {
+        // Ensure record_id is at least 1 (MDF specification requires record_id >= 1)
+        if cg.record_id == 0 {
+            cg.record_id = 1;
+        }
         Ok(Self {
             channel_groups: vec![cg],
             rec_id_size: 0,
             cycle_counts: vec![0],
+            shared_buffer: Vec::new(),
             data_chain: DataBlockChain::new(config),
             pending_record: None,
-            current_cg_index: 0,
             dg_offset: None,
             data_area_offset: None,
         })
@@ -419,7 +442,7 @@ impl StreamingDataGroup {
     }
 
     /// Create a new streaming data group with multiple channel groups and configuration
-    pub fn with_multiple_config(cgs: Vec<ChannelGroupDef>, config: StreamingConfig) -> WriteResult<Self> {
+    pub fn with_multiple_config(mut cgs: Vec<ChannelGroupDef>, config: StreamingConfig) -> WriteResult<Self> {
         if cgs.is_empty() {
             return Err(WriteError::MissingField("channel_groups".to_string()));
         }
@@ -434,13 +457,18 @@ impl StreamingDataGroup {
             4
         };
 
+        // Assign unique record IDs to each channel group (1, 2, 3, ...)
+        for (i, cg) in cgs.iter_mut().enumerate() {
+            cg.record_id = (i + 1) as u64;
+        }
+
         Ok(Self {
             cycle_counts: vec![0; cgs.len()],
+            shared_buffer: Vec::new(),
             channel_groups: cgs,
             rec_id_size,
             data_chain: DataBlockChain::new(config),
             pending_record: None,
-            current_cg_index: 0,
             dg_offset: None,
             data_area_offset: None,
         })
@@ -486,20 +514,19 @@ impl StreamingDataGroup {
             }
         }
 
-        self.pending_record = Some(record);
-        self.current_cg_index = cg_index;
+        self.pending_record = Some((cg_index, record));
         Ok(())
     }
 
     /// Set a channel value in the pending record
     pub fn set_channel_value<T: RecordValue>(&mut self, channel_name: &str, value: T) -> WriteResult<()> {
-        let record = self.pending_record.as_mut()
+        let (cg_index, record) = self.pending_record.as_mut()
             .ok_or(WriteError::InvalidState {
                 current: "No pending record".to_string(),
                 required: "Pending record started".to_string(),
             })?;
 
-        let cg = &self.channel_groups[self.current_cg_index];
+        let cg = &self.channel_groups[*cg_index];
         let channel = cg.get_channel(channel_name)
             .ok_or_else(|| WriteError::ChannelNotFound { name: channel_name.to_string() })?;
 
@@ -511,14 +538,14 @@ impl StreamingDataGroup {
 
     /// Complete and flush the current record
     pub fn flush_record(&mut self) -> WriteResult<()> {
-        let record = self.pending_record.take()
+        let (cg_index, record) = self.pending_record.take()
             .ok_or(WriteError::InvalidState {
                 current: "No pending record".to_string(),
                 required: "Pending record started".to_string(),
             })?;
 
-        self.data_chain.append(&record.data);
-        self.cycle_counts[self.current_cg_index] += 1;
+        self.shared_buffer.extend_from_slice(&record.data);
+        self.cycle_counts[cg_index] += 1;
         Ok(())
     }
 }
@@ -742,6 +769,81 @@ impl DataBlockChain {
 use super::block_writer::BlockWriter;
 
 // ============================================================================
+// Record sorting helpers
+// ============================================================================
+
+/// Sort a multi-CG DT block's records by their master-channel time value.
+///
+/// The MDF4 specification requires that all data records within a DG are stored
+/// in ascending order of the master channel value (ASAM MDF4 §5.4). This function
+/// performs a stable sort so that records already in order are left unchanged.
+///
+/// Assumptions (valid for all channels created by this library):
+/// - Master channel has `byte_offset == 0` inside the record data (after rec_id bytes)
+/// - Master channel is encoded as IEEE 754 f64 little-endian (data_type 4, bit_count 64)
+fn sort_records_by_time(data: Vec<u8>, dg: &StreamingDataGroup) -> Vec<u8> {
+    if data.is_empty() {
+        return data;
+    }
+
+    // Build a lookup: rec_id -> (total_record_bytes, master_time_byte_offset_in_record)
+    let mut rec_map: std::collections::HashMap<u64, (usize, usize)> =
+        std::collections::HashMap::new();
+    for cg in &dg.channel_groups {
+        let master_offset = cg.master.as_ref().map_or(0, |m| m.byte_offset as usize);
+        let record_total = dg.rec_id_size as usize + cg.record_size as usize;
+        rec_map.insert(cg.record_id, (record_total, master_offset));
+    }
+
+    // First pass: collect (time, start, end) for each record
+    let mut records: Vec<(f64, usize, usize)> = Vec::new();
+    let mut offset = 0usize;
+    while offset < data.len() {
+        let rec_id = match dg.rec_id_size {
+            1 => data[offset] as u64,
+            2 => {
+                let b: [u8; 2] = data[offset..offset + 2].try_into().unwrap_or([0; 2]);
+                u16::from_le_bytes(b) as u64
+            }
+            4 => {
+                let b: [u8; 4] = data[offset..offset + 4].try_into().unwrap_or([0; 4]);
+                u32::from_le_bytes(b) as u64
+            }
+            8 => {
+                let b: [u8; 8] = data[offset..offset + 8].try_into().unwrap_or([0; 8]);
+                u64::from_le_bytes(b)
+            }
+            _ => break,
+        };
+
+        let Some(&(record_total, master_offset)) = rec_map.get(&rec_id) else {
+            break; // Unknown rec_id — stop parsing
+        };
+
+        let time_start = offset + dg.rec_id_size as usize + master_offset;
+        let time = if time_start + 8 <= data.len() {
+            let b: [u8; 8] = data[time_start..time_start + 8].try_into().unwrap_or([0; 8]);
+            f64::from_le_bytes(b)
+        } else {
+            break;
+        };
+
+        records.push((time, offset, offset + record_total));
+        offset += record_total;
+    }
+
+    // Stable sort by time so equal-time records keep their relative order
+    records.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Second pass: write sorted records
+    let mut sorted = Vec::with_capacity(data.len());
+    for (_, start, end) in records {
+        sorted.extend_from_slice(&data[start..end]);
+    }
+    sorted
+}
+
+// ============================================================================
 // Mf4StreamWriter
 // ============================================================================
 
@@ -765,7 +867,7 @@ use super::block_writer::BlockWriter;
 ///
 /// // Define channels
 /// let time_def = ChannelDef::new_master("time");
-/// let temp_def = ChannelDef::new("Temperature").data_type(5);
+/// let temp_def = ChannelDef::new("Temperature").data_type(4);
 ///
 /// let cg_def = ChannelGroupDef::builder()
 ///     .name("Measurement")
@@ -901,10 +1003,30 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
             hd_time_quality: 0,
             hd_num_time_channels: 0,
             hd_dg_first: 0, // Will be updated later
-            hd_fh_first: 0,
+            hd_fh_first: 0, // Will be updated after FH block is written
             hd_md_comment: 0,
         };
         block_writer.write_hd_block(&hd_block)?;
+
+        // === Write FH Block (File History - mandatory for MDF 4.x) ===
+        let fh_block = super::block_writer::FhBlock {
+            fh_fh_next: 0,
+            fh_md_comment: 0,
+            fh_time_ns: self.metadata.start_time_ns,
+            fh_tz_offset: 0,
+            fh_dst_offset: 0,
+            fh_tool_id: "Mf4Parse".to_string(),
+            fh_tool_vendor: "".to_string(),
+            fh_tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            fh_user_name: self.metadata.author.clone().unwrap_or_default(),
+        };
+        let fh_offset = block_writer.write_fh_block(&fh_block)?;
+
+        // Update HD block's fh_first link
+        if let Some(hd_off) = self.hd_offset {
+            let hd_fh_first_offset = hd_off + 24 + 8; // After header + hd_dg_first
+            block_writer.update_link(hd_fh_first_offset, fh_offset)?;
+        }
 
         // === Write DG, CG, CN, TX blocks ===
         self.cg_offsets.clear();
@@ -929,6 +1051,42 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
             let mut cg_offs = Vec::new();
 
             for (cg_idx, cg) in dg.channel_groups.iter().enumerate() {
+                // Write TX block for acquisition name
+                let tx_acq_name_offset = if !cg.acq_name.is_empty() {
+                    block_writer.write_tx_block(&super::block_writer::TxBlock::new(&cg.acq_name))?
+                } else {
+                    0
+                };
+
+                // Write SI block if acq_source is present
+                let si_offset = if let Some(ref source) = cg.acq_source {
+                    // Write TX block for SI name
+                    let si_name_offset = block_writer.write_tx_block(
+                        &super::block_writer::TxBlock::new(&source.name)
+                    )?;
+
+                    // Write TX block for SI path
+                    let si_path_offset = if !source.path.is_empty() {
+                        block_writer.write_tx_block(&super::block_writer::TxBlock::new(&source.path))?
+                    } else {
+                        0
+                    };
+
+                    // Write SI block
+                    let si_flags = if source.simulated { 0x01u8 } else { 0x00u8 };
+                    let si_block = super::block_writer::SiBlock {
+                        si_tx_name: si_name_offset,
+                        si_tx_path: si_path_offset,
+                        si_md_comment: 0,
+                        si_type: source.source_type as u8,
+                        si_bus_type: source.bus_type as u8,
+                        si_flags,
+                    };
+                    block_writer.write_si_block(&si_block)?
+                } else {
+                    0
+                };
+
                 // Write CG block
                 let cg_offset = block_writer.position();
                 cg_offs.push(cg_offset);
@@ -936,8 +1094,8 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
                 let cg_block = super::block_writer::CgBlock {
                     cg_cg_next: 0, // Will be updated later
                     cg_cn_first: 0, // Will be updated later
-                    cg_tx_acq_name: 0,
-                    cg_si_acq_source: 0,
+                    cg_tx_acq_name: tx_acq_name_offset,
+                    cg_si_acq_source: si_offset,
                     cg_md_comment: 0,
                     cg_record_id: cg.record_id,
                     cg_cycle_count: 0, // Will be updated during finalize
@@ -1204,8 +1362,17 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
         let mut block_writer = BlockWriter::new(&mut self.writer)?;
 
         for (dg_idx, dg) in self.data_groups.iter_mut().enumerate() {
-            // Get data from chain
-            let data = std::mem::take(&mut dg.data_chain.current_buffer);
+            // Take the shared buffer and sort by master-channel time for multi-CG DGs.
+            // The MDF4 specification requires all records within a DG to be sorted by
+            // the master channel time. Sorting here ensures compatibility with all
+            // conformant MDF4 readers regardless of the order records were written.
+            let raw = std::mem::take(&mut dg.shared_buffer);
+            let data = if dg.channel_groups.len() > 1 {
+                sort_records_by_time(raw, dg)
+            } else {
+                raw
+            };
+
             let cycle_count = dg.cycle_counts.iter().sum();
 
             if compact {
@@ -1231,17 +1398,17 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
             // 3. Update cycle counts in CG blocks
             for (cg_idx, cg) in dg.channel_groups.iter().enumerate() {
                 if let Some(&cg_offset) = self.cg_offsets.get(dg_idx).and_then(|v| v.get(cg_idx)) {
-                    // CG cycle_count is at offset 64 from CG block start
-                    let cycle_count_offset = cg_offset + 24 + 40; // After links + record_id
+                    // CG cycle_count data field is at offset 80 from CG block start
+                    // (24 header + 48 links + 8 record_id = 80)
+                    let cycle_count_offset = cg_offset + 80;
                     let cycle_count_bytes = if dg.channel_groups.len() == 1 {
                         cycle_count
                     } else {
                         dg.cycle_counts[cg_idx]
                     };
 
-                    // Seek and update cycle_count
-                    block_writer.seek(cycle_count_offset)?;
-                    block_writer.write_bytes(&cycle_count_bytes.to_le_bytes())?;
+                    // Seek and update cycle_count (uses update_link to preserve current position)
+                    block_writer.update_link(cycle_count_offset, cycle_count_bytes)?;
                 }
             }
         }

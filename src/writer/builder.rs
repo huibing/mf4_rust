@@ -373,7 +373,7 @@ impl ChannelBuilder {
     pub fn new_master_time(name: &str) -> Self {
         Self {
             name: name.to_string(),
-            data_type: 5, // FLOAT64 LE
+            data_type: 4, // FLOAT64 LE
             bit_count: 64,
             unit: Some("s".to_string()),
             comment: None,
@@ -791,7 +791,7 @@ impl Default for DataGroupBuilder {
 /// // Define channels
 /// let time_ch = ChannelBuilder::new_master_time("time");
 /// let temp_ch = ChannelBuilder::new("Temperature")
-///     .data_type(5)  // FLOAT64
+///     .data_type(4)  // FLOAT64 LE
 ///     .unit("°C")
 ///     .build()?;
 ///
@@ -927,6 +927,27 @@ impl Mf4Builder {
 
         // Write HD block placeholder (will update dg_first later)
         self.write_hd_block_raw(&mut writer, &hd_block)?;
+
+        // === Write FH Block first, then calculate offsets ===
+        // FH block is mandatory for MDF 4.x
+        let fh_block = super::block_writer::FhBlock {
+            fh_fh_next: 0,
+            fh_md_comment: 0,
+            fh_time_ns: self.metadata.start_time_ns,
+            fh_tz_offset: 0,
+            fh_dst_offset: 0,
+            fh_tool_id: "Mf4Parse".to_string(),
+            fh_tool_vendor: "".to_string(),
+            fh_tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            fh_user_name: self.metadata.author.clone().unwrap_or_default(),
+        };
+        // Write FH block using BlockWriter
+        let mut block_writer = super::block_writer::BlockWriter::new(&mut writer)?;
+        let fh_offset = block_writer.write_fh_block(&fh_block)?;
+
+        // Update HD block's fh_first link
+        let hd_fh_first_offset = hd_offset + 24 + 8; // After header + hd_dg_first
+        block_writer.update_link(hd_fh_first_offset, fh_offset)?;
 
         // === Calculate all offsets ===
         // We need to know the total size to compute data block positions
@@ -1100,14 +1121,47 @@ impl Mf4Builder {
             // Data block
             current_offset = (current_offset + 7) & !7;
             data_offsets.push(current_offset);
+
+            // Advance past the data block so subsequent DGs are laid out correctly
+            let mut data_payload_size: u64 = 0;
+            for cg in &dg.channel_groups {
+                let mut record_size: u32 = 0;
+                if let Some(ref master) = cg.master {
+                    record_size += master.bit_count.div_ceil(8);
+                }
+                for ch in &cg.channels {
+                    record_size += ch.bit_count.div_ceil(8);
+                }
+                let cycle_count: u64 = if let Some(ref master) = cg.master {
+                    let master_byte_size = master.bit_count.div_ceil(8) as usize;
+                    self.channel_data.get(&master.name)
+                        .map(|d| d.len() / master_byte_size)
+                        .unwrap_or(0) as u64
+                } else if !cg.channels.is_empty() {
+                    let first_ch = &cg.channels[0];
+                    let first_byte_size = first_ch.bit_count.div_ceil(8) as usize;
+                    self.channel_data.get(&first_ch.name)
+                        .map(|d| d.len() / first_byte_size)
+                        .unwrap_or(0) as u64
+                } else {
+                    0
+                };
+                let rec_prefix = dg.rec_id_size as u32;
+                data_payload_size += cycle_count * (record_size + rec_prefix) as u64;
+            }
+            // DT block header = 24 bytes (id + reserved + length + link_count)
+            current_offset += 24 + data_payload_size;
         }
 
         // === Second pass: write blocks with correct links ===
         writer.seek(SeekFrom::Start(hd_offset))?;
 
-        // Update HD block with dg_first
+        // Update HD block with dg_first (fh_first already set in first pass)
         hd_block.hd_dg_first = if !dg_offsets.is_empty() { dg_offsets[0] } else { 0 };
+        hd_block.hd_fh_first = fh_offset;
         self.write_hd_block_raw(&mut writer, &hd_block)?;
+
+        // FH block was already written in first pass
 
         // Write DG, CG, CN, TX blocks
         for (dg_idx, dg) in self.data_groups.iter().enumerate() {
@@ -1828,7 +1882,10 @@ pub trait ChannelData: Sized + Clone + 'static {
 impl ChannelData for f64 {
     fn serialize_to_bytes(data: &[Self], data_type: u8, bit_count: u32) -> WriteResult<Vec<u8>> {
         match data_type {
-            4 | 5 => { // FLOAT_LE or FLOAT_BE
+            4 | 5 | 6 => { // FLOAT types (all little-endian per MDF spec)
+                // 4: INT8 (not used for f64, but handle gracefully)
+                // 5: FLOAT64_LE (64-bit little-endian)
+                // 6: FLOAT32_LE (32-bit little-endian)
                 if bit_count != 64 {
                     return Err(WriteError::InvalidChannelConfig(
                         format!("f64 requires bit_count=64, got {}", bit_count)
@@ -1836,11 +1893,7 @@ impl ChannelData for f64 {
                 }
                 let mut result = Vec::with_capacity(data.len() * 8);
                 for value in data {
-                    if data_type == 4 {
-                        result.extend_from_slice(&value.to_le_bytes());
-                    } else {
-                        result.extend_from_slice(&value.to_be_bytes());
-                    }
+                    result.extend_from_slice(&value.to_le_bytes());
                 }
                 Ok(result)
             }
@@ -1852,7 +1905,7 @@ impl ChannelData for f64 {
         }
     }
 
-    fn default_data_type() -> u8 { 5 } // FLOAT_LE
+    fn default_data_type() -> u8 { 4 } // FLOAT_LE
     fn default_bit_count() -> u32 { 64 }
 }
 
