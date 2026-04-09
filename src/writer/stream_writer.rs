@@ -215,6 +215,17 @@ pub struct ChannelGroupDef {
     pub record_size: u32,
     /// Data bytes (excluding invalid bytes)
     pub data_bytes: u32,
+    /// Channel name → index lookup cache for O(1) access
+    channel_index: std::collections::HashMap<String, ChannelLookup>,
+}
+
+/// Cached channel lookup result to avoid repeated linear scans
+#[derive(Debug, Clone)]
+enum ChannelLookup {
+    /// Index into `channels` vec
+    Regular(usize),
+    /// Master channel
+    Master,
 }
 
 impl ChannelGroupDef {
@@ -229,10 +240,12 @@ impl ChannelGroupDef {
         0
     }
 
-    /// Get channel by name
+    /// Get channel by name (O(1) via cached index)
     pub fn get_channel(&self, name: &str) -> Option<&ChannelDef> {
-        self.channels.iter().find(|c| c.name == name)
-            .or_else(|| self.master.as_ref().and_then(|m| if m.name == name { Some(m) } else { None }))
+        match self.channel_index.get(name)? {
+            ChannelLookup::Regular(idx) => self.channels.get(*idx),
+            ChannelLookup::Master => self.master.as_ref(),
+        }
     }
 }
 
@@ -313,6 +326,17 @@ impl ChannelGroupDefBuilder {
             current_offset += ch.bytes_count();
         }
 
+        // Build channel name → index lookup
+        let mut channel_index = std::collections::HashMap::with_capacity(
+            channels.len() + if master.is_some() { 1 } else { 0 }
+        );
+        if let Some(ref m) = master {
+            channel_index.insert(m.name.clone(), ChannelLookup::Master);
+        }
+        for (i, ch) in channels.iter().enumerate() {
+            channel_index.insert(ch.name.clone(), ChannelLookup::Regular(i));
+        }
+
         Ok(ChannelGroupDef {
             acq_name: self.acq_name,
             acq_source: self.acq_source,
@@ -321,6 +345,7 @@ impl ChannelGroupDefBuilder {
             record_id: self.record_id,
             record_size: current_offset,
             data_bytes: current_offset,
+            channel_index,
         })
     }
 }
@@ -412,6 +437,8 @@ pub struct StreamingDataGroup {
     pub shared_buffer: Vec<u8>,
     /// Pending record being built
     pub pending_record: Option<(usize, RecordData)>,
+    /// Reusable record buffer to avoid per-record allocation
+    reusable_record: Option<RecordData>,
     /// File offset of this DG block (set during finalize_structure)
     pub dg_offset: Option<u64>,
     /// File offset of data area (set during finalize_structure)
@@ -432,13 +459,16 @@ impl StreamingDataGroup {
         }
         // rec_id_size is 0 for single-CG, so effective record size = record_size
         let effective_record_size = cg.record_size;
+        // Pre-allocate shared_buffer to block_size to reduce reallocations
+        let initial_capacity = config.block_size as usize;
         Ok(Self {
             channel_groups: vec![cg],
             rec_id_size: 0,
             cycle_counts: vec![0],
-            shared_buffer: Vec::new(),
+            shared_buffer: Vec::with_capacity(initial_capacity),
             data_chain: DataBlockChain::with_record_size(config, effective_record_size),
             pending_record: None,
+            reusable_record: None,
             dg_offset: None,
             data_area_offset: None,
         })
@@ -477,13 +507,15 @@ impl StreamingDataGroup {
             .max()
             .unwrap_or(0);
 
+        let initial_capacity = config.block_size as usize;
         Ok(Self {
             cycle_counts: vec![0; cgs.len()],
-            shared_buffer: Vec::new(),
+            shared_buffer: Vec::with_capacity(initial_capacity),
             channel_groups: cgs,
             rec_id_size,
             data_chain: DataBlockChain::with_record_size(config, max_record_size),
             pending_record: None,
+            reusable_record: None,
             dg_offset: None,
             data_area_offset: None,
         })
@@ -516,7 +548,16 @@ impl StreamingDataGroup {
         let cg = &self.channel_groups[cg_index];
         let record_size = cg.record_size as usize + self.rec_id_size as usize;
 
-        let mut record = RecordData::new(cg.record_id, record_size);
+        // Reuse previously allocated record buffer if same size, otherwise allocate
+        let mut record = match self.reusable_record.take() {
+            Some(mut r) if r.data.len() == record_size => {
+                // Zero out and reuse
+                r.record_id = cg.record_id;
+                r.data.iter_mut().for_each(|b| *b = 0);
+                r
+            }
+            _ => RecordData::new(cg.record_id, record_size),
+        };
 
         // Write record ID if needed
         if self.rec_id_size > 0 {
@@ -561,6 +602,8 @@ impl StreamingDataGroup {
 
         self.shared_buffer.extend_from_slice(&record.data);
         self.cycle_counts[cg_index] += 1;
+        // Save record buffer for reuse in next start_record
+        self.reusable_record = Some(record);
         Ok(())
     }
 }
@@ -827,16 +870,20 @@ impl DataBlockChain {
         let effective_size = self.effective_block_size() as usize;
         let total_data_len = data.len() as u64;
 
-        // Split data into record-aligned chunks
-        let chunks = if self.record_size > 0 && effective_size > 0 {
-            self.split_record_aligned(&data, effective_size)
+        // Compute record-aligned chunk boundaries (start, end) without copying
+        let chunk_ranges = if self.record_size > 0 && effective_size > 0 {
+            self.compute_record_aligned_ranges(data.len(), effective_size)
         } else if effective_size > 0 {
-            // No record alignment, just split by size
-            data.chunks(effective_size)
-                .map(|c| c.to_vec())
-                .collect::<Vec<_>>()
+            let mut ranges = Vec::new();
+            let mut offset = 0;
+            while offset < data.len() {
+                let end = (offset + effective_size).min(data.len());
+                ranges.push((offset, end));
+                offset = end;
+            }
+            ranges
         } else {
-            vec![data]
+            vec![(0, data.len())]
         };
 
         // Reset blocks for this chain
@@ -846,20 +893,21 @@ impl DataBlockChain {
         // Decide compression once based on total data size, not per-chunk
         let should_compress = self.config.enable_compression
             && total_data_len >= self.config.compression_threshold;
-        let mut chunk_sizes: Vec<u64> = Vec::new();
+        let mut chunk_sizes: Vec<u64> = Vec::with_capacity(chunk_ranges.len());
 
-        // Write each chunk as DT or DZ
-        for chunk in chunks {
+        // Write each chunk as DT or DZ — reference slices, no copy
+        for (start, end) in &chunk_ranges {
+            let chunk = &data[*start..*end];
             let chunk_len = chunk.len() as u64;
             chunk_sizes.push(chunk_len);
 
-            let offset = if should_compress {
+            if should_compress {
                 let compressor = super::compression::Compressor {
                     compression_type: super::compression::CompressionType::Deflate,
                     level: self.config.compression_level,
                     column_count: None,
                 };
-                let (compressed_data, original_len) = compressor.compress(&chunk)?;
+                let (compressed_data, original_len) = compressor.compress(chunk)?;
                 let dz = super::block_writer::DzBlock {
                     dz_org_data_length: original_len,
                     dz_data_length: compressed_data.len() as u64,
@@ -873,15 +921,13 @@ impl DataBlockChain {
                     size: 0,
                     compressed: true,
                 });
-                off
             } else {
-                let off = writer.write_dt_block(&super::block_writer::DtBlock::new(chunk))?;
+                let off = writer.write_dt_block(&super::block_writer::DtBlock::new(chunk.to_vec()))?;
                 self.blocks.push(DataBlockInfo {
                     offset: off,
                     size: 0,
                     compressed: false,
                 });
-                off
             };
 
             self.total_bytes += chunk_len;
@@ -914,17 +960,18 @@ impl DataBlockChain {
     }
 
     /// Split data into record-aligned chunks of at most `max_size` bytes.
-    fn split_record_aligned(&self, data: &[u8], max_size: usize) -> Vec<Vec<u8>> {
+    /// Compute record-aligned chunk ranges (start, end) without data copying
+    fn compute_record_aligned_ranges(&self, data_len: usize, max_size: usize) -> Vec<(usize, usize)> {
         let rs = self.record_size as usize;
-        if rs == 0 || data.is_empty() {
-            return vec![data.to_vec()];
+        if rs == 0 || data_len == 0 {
+            return vec![(0, data_len)];
         }
 
-        let mut chunks = Vec::new();
+        let mut ranges = Vec::new();
         let mut offset = 0;
 
-        while offset < data.len() {
-            let remaining = data.len() - offset;
+        while offset < data_len {
+            let remaining = data_len - offset;
             let chunk_size = if remaining <= max_size {
                 remaining
             } else {
@@ -935,15 +982,15 @@ impl DataBlockChain {
             if chunk_size == 0 {
                 // Record is larger than max_size — take one full record
                 let single_record = remaining.min(rs);
-                chunks.push(data[offset..offset + single_record].to_vec());
+                ranges.push((offset, offset + single_record));
                 offset += single_record;
             } else {
-                chunks.push(data[offset..offset + chunk_size].to_vec());
+                ranges.push((offset, offset + chunk_size));
                 offset += chunk_size;
             }
         }
 
-        chunks
+        ranges
     }
 
     /// Write all blocks and create DL block
@@ -1138,10 +1185,6 @@ pub struct Mf4StreamWriter<W: Write + Seek> {
     config: StreamingConfig,
     /// Data groups with streaming capability
     data_groups: Vec<StreamingDataGroup>,
-    /// Write buffer for performance
-    buffer: Vec<u8>,
-    /// Buffer flush threshold
-    flush_threshold: usize,
     /// File state tracking
     state: WriterState,
     /// File positions for updating during finalize
@@ -1151,6 +1194,8 @@ pub struct Mf4StreamWriter<W: Write + Seek> {
     dg_offsets: Vec<u64>,
     /// CG block offsets (for updating cycle_count)
     cg_offsets: Vec<Vec<u64>>,
+    /// Index of the data group with an active pending record (avoids linear scan)
+    active_dg_index: Option<usize>,
 }
 
 impl Mf4StreamWriter<BufWriter<std::fs::File>> {
@@ -1170,12 +1215,11 @@ impl Mf4StreamWriter<BufWriter<std::fs::File>> {
             metadata,
             config,
             data_groups: Vec::new(),
-            buffer: Vec::new(),
-            flush_threshold: 1_000_000, // 1 MB
             state: WriterState::Initialized,
             hd_offset: None,
             dg_offsets: Vec::new(),
             cg_offsets: Vec::new(),
+            active_dg_index: None,
         })
     }
 }
@@ -1287,7 +1331,7 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
             // Write CG and CN blocks for this DG
             let mut cg_offs = Vec::new();
 
-            for (cg_idx, cg) in dg.channel_groups.iter().enumerate() {
+            for (_cg_idx, cg) in dg.channel_groups.iter().enumerate() {
                 // Write TX block for acquisition name
                 let tx_acq_name_offset = if !cg.acq_name.is_empty() {
                     block_writer.write_tx_block(&super::block_writer::TxBlock::new(&cg.acq_name))?
@@ -1492,45 +1536,35 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
             .ok_or(WriteError::ChannelNotFound { name: format!("DataGroup[{}]", dg_index) })?;
 
         dg.start_record(cg_index)?;
+        self.active_dg_index = Some(dg_index);
         self.state = WriterState::Writing;
         Ok(())
     }
 
     /// Set a channel value in the current pending record
     pub fn set_channel_value<T: RecordValue>(&mut self, channel_name: &str, value: T) -> WriteResult<()> {
-        // Find the data group with the pending record
-        for dg in &mut self.data_groups {
-            if dg.pending_record.is_some() {
-                dg.set_channel_value(channel_name, value)?;
-                return Ok(());
-            }
-        }
-
-        Err(WriteError::InvalidState {
+        let dg_idx = self.active_dg_index.ok_or(WriteError::InvalidState {
             current: "No pending record".to_string(),
             required: "Record started".to_string(),
-        })
+        })?;
+        self.data_groups[dg_idx].set_channel_value(channel_name, value)
     }
 
     /// Complete and flush the current record
     pub fn flush_record(&mut self) -> WriteResult<()> {
-        for dg in &mut self.data_groups {
-            if dg.pending_record.is_some() {
-                dg.flush_record()?;
-
-                // Check if we need to flush the block
-                if dg.is_block_full() {
-                    self.flush_data_block()?;
-                }
-
-                return Ok(());
-            }
-        }
-
-        Err(WriteError::InvalidState {
+        let dg_idx = self.active_dg_index.take().ok_or(WriteError::InvalidState {
             current: "No pending record".to_string(),
             required: "Record started".to_string(),
-        })
+        })?;
+
+        let dg = &mut self.data_groups[dg_idx];
+        dg.flush_record()?;
+
+        if dg.is_block_full() {
+            self.flush_data_block()?;
+        }
+
+        Ok(())
     }
 
     /// Flush the current data block to disk
@@ -1547,7 +1581,7 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
                 // Write DT block
                 let dt_offset = dg.data_chain.finalize_current_block(&mut block_writer)?;
 
-                if let Some(offset) = dt_offset {
+                if let Some(_offset) = dt_offset {
                     // Track this block for DL chain
                     // The DL block will be written during finalize
                 }
