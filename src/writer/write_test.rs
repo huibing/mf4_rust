@@ -143,7 +143,7 @@ mod tests {
             comment: Some("Round-trip test".to_string()),
         };
 
-        let mut builder = Mf4Builder::new(metadata);
+        let builder = Mf4Builder::new(metadata);
 
         // Build channel structure from original
         // For simplicity, just read first data group
@@ -1643,7 +1643,6 @@ mod tests {
     #[cfg(feature = "streaming")]
     #[test]
     fn test_dz_block_size_limit_4mb() {
-        use std::io::{Read, Seek, SeekFrom};
 
         // Each record = 16 bytes (2 × f64).
         // 4MB = 4,194,304 bytes → 262,144 records to fill one DZ block.
@@ -1714,7 +1713,6 @@ mod tests {
     #[cfg(feature = "streaming")]
     #[test]
     fn test_record_alignment_in_dz_blocks() {
-        use std::io::{Read, Seek, SeekFrom};
 
         // Use a record size that doesn't divide evenly into typical block sizes.
         // 3 channels × f64 = 24 bytes per record.

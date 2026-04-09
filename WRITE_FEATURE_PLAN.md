@@ -805,3 +805,105 @@ flate2 = { version = "1.0", optional = true }
 - Existing read implementation: `src/lib.rs`, `src/components/`
 - Block definitions: `config/*.toml`
 - Test data: `test/*.mf4`
+- Write module: `src/writer/`
+- Write tests: `src/writer/write_test.rs`
+- Examples: `examples/compression_demo.rs`, `examples/bench_stream_write.rs`, `examples/generate_test_files.rs`
+
+---
+
+## Appendix C: Implementation Status (as of 2026-04-10)
+
+### Completed Features
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **MF4 File Creation** | ✅ Done | ID + HD blocks, proper header structure |
+| **ID/HD Block Write** | ✅ Done | File identification and header with metadata |
+| **DG Block Write** | ✅ Done | Data Group with linked CG/data blocks |
+| **CG Block Write** | ✅ Done | Channel Group with record size, cycle count |
+| **CN Block Write** | ✅ Done | Channel with bit offset, data type, unit |
+| **DT Block Write** | ✅ Done | Uncompressed data blocks |
+| **DZ Block Write** | ✅ Done | Compressed data blocks (0 links per spec, 48+data layout) |
+| **DL Block Write** | ✅ Done | Data List linking multiple DT/DZ blocks with cumulative offsets |
+| **HL Block Write** | ✅ Done | Header List for compressed DL chains (40 bytes) |
+| **TX/MD Block Write** | ✅ Done | Text and metadata blocks |
+| **CC Block Write** | ✅ Done | Conversion blocks (linear, text tables, etc.) |
+| **SI Block Write** | ✅ Done | Source Information blocks |
+| **One-time Write** | ✅ Done | `Mf4Builder` API |
+| **Streaming Write** | ✅ Done | `Mf4StreamWriter` with compact and stream modes |
+| **DL-Chained Stream Write** | ✅ Done | Record-aligned chunking with 4MB DZ limit |
+| **SimpleWriter** | ✅ Done | Ergonomic high-level wrapper for common use cases |
+| **Compression** | ✅ Done | Deflate compression with configurable level/threshold |
+| **All numeric types** | ✅ Done | u8/u16/u32/u64, i8/i16/i32/i64, f32/f64 |
+| **Strings** | ✅ Done | UTF-8 string channels |
+| **Byte arrays** | ✅ Done | Raw byte array channels |
+
+### Not Implemented
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Transpose + Deflate compression | ❌ Not started | Write support (read works) |
+| CA Block Write | ❌ Not started | Channel array blocks |
+| UTF-16 strings | ❌ Not started | Low priority |
+
+### Block Hierarchy (Write Modes)
+
+```
+Compact mode (single block):
+  DG.dg_data ──→ DT
+  DG.dg_data ──→ DZ          (if compressed)
+
+Stream mode (DL-chained blocks):
+  DG.dg_data ──→ DL ──→ DT₁ ──→ DT₂ ──→ ... ──→ DTₙ
+
+Stream mode + Compression:
+  DG.dg_data ──→ HL ──→ DL ──→ DZ₁ ──→ DZ₂ ──→ ... ──→ DZₙ
+                                 │
+                           Each DZ ≤ 4MB uncompressed
+                           Aligned to record boundaries
+```
+
+### API Layers
+
+```
+┌─────────────────────────────────────────────────┐
+│  SimpleWriter  (3 steps: build → write → done)  │  ← Ergonomic
+├─────────────────────────────────────────────────┤
+│  Mf4StreamWriter  (start_record/set/flush)      │  ← Full control
+│  ChannelGroupDefBuilder  (typed channel helpers) │
+│  StreamingConfig  (block_size, compression)      │
+├─────────────────────────────────────────────────┤
+│  Mf4Builder  (one-time write)                   │  ← Batch write
+├─────────────────────────────────────────────────┤
+│  BlockWriter  (write_dg_block, write_cn_block)  │  ← Low-level
+│  HlBlock, DlBlock, DzBlock                      │
+└─────────────────────────────────────────────────┘
+```
+
+### Performance (Release Build, 4 × f64 Channels)
+
+| Configuration | Throughput | File Size |
+|---------------|-----------|-----------|
+| Stream, uncompressed, 1M samples | ~634K rec/s | 30.5 MB |
+| Stream, compressed, 1M samples | ~132K rec/s | 20.0 MB |
+| Compact, uncompressed, 1M samples | ~549K rec/s | 30.5 MB |
+| Compact, compressed, 1M samples | ~309K rec/s | 20.0 MB |
+| SimpleWriter vs Full API overhead | < 3% | identical |
+
+### Test Coverage
+
+| Category | Test Count |
+|----------|-----------|
+| One-time write (Mf4Builder) | 25 |
+| DL-chain stream write | 13 |
+| Record alignment | 3 |
+| Ergonomic API (SimpleWriter + convenience) | 9 |
+| Integration (write → read roundtrip) | 34 |
+| **Total** | **84** |
+
+### Commits
+
+1. `feat(write): implement MF4 file write functionality` — Core write with Mf4Builder + Mf4StreamWriter
+2. `feat(writer): add DL-chained stream write with HL/DZ support` — DL-linked DT/DZ blocks
+3. `perf(writer): optimize stream write hot path` — O(1) lookups, zero-copy, buffer reuse
+4. `feat(writer): add SimpleWriter ergonomic API` — High-level wrapper + convenience methods

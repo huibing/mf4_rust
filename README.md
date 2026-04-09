@@ -5,7 +5,12 @@ A Rust library for reading and writing MF4 (Measurement Data Format 4) files, wh
 Standard reference: https://www.asam.net/standards/detail/mdf/wiki/
 Demo MF4 files can be accessed from https://www.asam.net/standards/detail/mdf/
 
-Recent changes (2026-04-03 ~ 2026-04-08)
+Recent changes (2026-04-03 ~ 2026-04-10)
+
+**2026-04-10**
+- feat(writer): add SimpleWriter ergonomic API — high-level wrapper for common single-channel-group use case.
+- feat(writer): add DL-chained stream write with HL/DZ support — streaming data stored as DL-linked DT/DZ blocks.
+- perf(writer): optimize stream write hot path — O(1) channel lookup, zero-copy range computation, buffer reuse.
 
 **2026-04-08**
 - feat(sort): add MF4 file sort feature — converts unsorted MF4 files (multiple ChannelGroups per DataGroup) into sorted format (one ChannelGroup per DataGroup).
@@ -37,10 +42,14 @@ Recent changes (2026-04-03 ~ 2026-04-08)
 ### Writing
 - **One-time Write Mode**: Create complete MF4 files in a single operation using `Mf4Builder`
 - **Streaming Write Mode**: Incrementally append data using `Mf4StreamWriter`
+  - **Compact mode**: All data in a single DT/DZ block
+  - **Stream mode**: Data split into DL-chained DT blocks for efficient buffering
+  - **Compressed stream mode**: DG → HL → DL → [DZ₁, DZ₂, ...], each DZ ≤ 4MB uncompressed
+- **SimpleWriter**: High-level ergonomic wrapper for common single-channel-group use cases
 - Support all numeric types (u8/u16/u32/u64, i8/i16/i32/i64, f32/f64)
 - Support strings and byte arrays
 - Support compression (Deflate, Transpose + Deflate)
-- Proper MF4 block structure (ID, HD, DG, CG, CN, TX, DT/DZ blocks)
+- Proper MF4 block structure (ID, HD, DG, CG, CN, TX, DT/DZ/DL/HL blocks)
 
 ### Sorting
 - Convert unsorted MF4 files to sorted format
@@ -196,48 +205,96 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Use `Mf4StreamWriter` for incremental data append (useful for real-time data acquisition):
 
 ```rust
-use mf4_parse::writer::{Mf4StreamWriter, Mf4Metadata, StreamingDataGroup, ChannelGroupDef, ChannelDef};
+use mf4_parse::writer::stream_writer::{
+    ChannelGroupDefBuilder, Mf4StreamWriter, StreamingConfig, StreamingDataGroup,
+};
+use mf4_parse::writer::Mf4Metadata;
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Create streaming writer
-    let mut writer = Mf4StreamWriter::new(
-        PathBuf::from("streaming.mf4"),
-        Mf4Metadata::default()
+    // 1. Create streaming writer with configuration
+    let metadata = Mf4Metadata::new().with_author("My App");
+    let config = StreamingConfig::new()
+        .with_compression_level(6);  // Enable zlib compression
+    let mut writer = Mf4StreamWriter::with_config(
+        PathBuf::from("streaming.mf4"), metadata, config
     )?;
 
-    // 2. Define channel structure
-    let time_def = ChannelDef::new_master("time");
-    let temp_def = ChannelDef::new("Temperature")
-        .data_type(5)  // FLOAT64
-        .unit("°C");
-
-    let cg_def = ChannelGroupDef::new()
+    // 2. Define channel structure using convenience methods
+    let cg = ChannelGroupDefBuilder::new()
         .name("Measurement")
-        .master(time_def)
-        .channel(temp_def);
+        .with_time_channel("time")       // Master channel (f64, unit "s")
+        .add_f64_channel("voltage", "V") // Data channel
+        .add_f64_channel("current", "A") // Data channel
+        .build()?;
 
     // 3. Add data group and finalize structure
-    let dg = StreamingDataGroup::new(cg_def);
-    writer.add_data_group(dg)?;
+    writer.add_data_group(StreamingDataGroup::new(cg)?)?;
     writer.finalize_structure()?;
 
     // 4. Write data incrementally
-    for i in 0..100 {
-        let time = i as f64 * 0.01;
-        let temp = 20.0 + (i as f64 * 0.1).sin();
-
-        writer.append_record("time", &time)?;
-        writer.append_record("Temperature", &temp)?;
+    for i in 0..1000 {
+        let time = i as f64 * 0.001;
+        writer.start_record(0, 0)?;
+        writer.set_channel_value("time", time)?;
+        writer.set_channel_value("voltage", 3.3 + (time * 10.0).sin())?;
+        writer.set_channel_value("current", 0.5 + (time * 5.0).cos() * 0.1)?;
         writer.flush_record()?;
     }
 
-    // 5. Finalize and close
-    writer.finalize()?;
+    // 5. Finalize — false = stream mode (DL-chained blocks)
+    //              true  = compact mode (single DT/DZ block)
+    writer.finalize_with_compact(false)?;
 
     Ok(())
 }
 ```
+
+#### Shorthand with `write_record`
+
+For single-DG/single-CG files with all f64 channels, use the `write_record` shorthand:
+
+```rust
+// After setup (steps 1-3 above)...
+// Values in channel definition order: [time, voltage, current]
+writer.write_record(&[0.0, 3.3, 0.5])?;
+writer.write_record(&[0.001, 3.4, 0.6])?;
+writer.finalize_with_compact(false)?;
+```
+
+### SimpleWriter (Ergonomic API)
+
+For the common case of a single channel group with f64 channels, `SimpleWriter` reduces
+the entire setup to a fluent builder:
+
+```rust
+use mf4_parse::writer::SimpleWriter;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut writer = SimpleWriter::new("output.mf4")
+        .author("My App")
+        .time_channel("time", "s")
+        .f64_channel("voltage", "V")
+        .f64_channel("current", "A")
+        .compression(6)      // zlib level 6
+        .stream_mode()        // DL-chained blocks (default)
+        .build()?;
+
+    for i in 0..10000 {
+        let t = i as f64 * 0.001;
+        writer.write_record(&[t, 3.3 + t.sin(), 0.5 + t.cos() * 0.1])?;
+    }
+
+    writer.finalize()?;
+    Ok(())
+}
+```
+
+Available channel types: `time_channel`, `f64_channel`, `f32_channel`,
+`u8_channel`, `u16_channel`, `u32_channel`, `u64_channel`,
+`i16_channel`, `i32_channel`.
+
+Use `.compact_mode()` instead of `.stream_mode()` for single-block output.
 
 ### Sorting MF4 Files
 
