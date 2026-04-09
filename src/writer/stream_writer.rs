@@ -74,6 +74,12 @@ impl StreamingConfig {
         self.compression_level = level.clamp(1, 9);
         self
     }
+
+    /// Set the compression threshold (data below this size won't be compressed)
+    pub fn with_compression_threshold(mut self, threshold: u64) -> Self {
+        self.compression_threshold = threshold;
+        self
+    }
 }
 
 // ============================================================================
@@ -424,12 +430,14 @@ impl StreamingDataGroup {
         if cg.record_id == 0 {
             cg.record_id = 1;
         }
+        // rec_id_size is 0 for single-CG, so effective record size = record_size
+        let effective_record_size = cg.record_size;
         Ok(Self {
             channel_groups: vec![cg],
             rec_id_size: 0,
             cycle_counts: vec![0],
             shared_buffer: Vec::new(),
-            data_chain: DataBlockChain::new(config),
+            data_chain: DataBlockChain::with_record_size(config, effective_record_size),
             pending_record: None,
             dg_offset: None,
             data_area_offset: None,
@@ -462,12 +470,19 @@ impl StreamingDataGroup {
             cg.record_id = (i + 1) as u64;
         }
 
+        // For multi-CG, use the largest effective record size for alignment.
+        // Each record includes rec_id_size prefix bytes.
+        let max_record_size = cgs.iter()
+            .map(|cg| cg.record_size + rec_id_size as u32)
+            .max()
+            .unwrap_or(0);
+
         Ok(Self {
             cycle_counts: vec![0; cgs.len()],
             shared_buffer: Vec::new(),
             channel_groups: cgs,
             rec_id_size,
-            data_chain: DataBlockChain::new(config),
+            data_chain: DataBlockChain::with_record_size(config, max_record_size),
             pending_record: None,
             dg_offset: None,
             data_area_offset: None,
@@ -624,6 +639,11 @@ impl RecordValue for i64 {
 // Data Block Chain (Chained DT/DZ blocks via DL)
 // ============================================================================
 
+/// Maximum uncompressed size for a single DZ block (4 MB).
+/// Per MDF4 specification, individual DZ blocks in a DL chain should not
+/// exceed this limit to keep decompression memory bounded.
+pub const MAX_DZ_UNCOMPRESSED_SIZE: u64 = 4 * 1024 * 1024;
+
 /// Represents a single data block in the chain
 #[derive(Debug, Clone)]
 pub struct DataBlockInfo {
@@ -638,10 +658,15 @@ pub struct DataBlockInfo {
 /// Manages a chain of data blocks linked via DL block
 ///
 /// This structure implements the chained data block strategy:
-/// - Data is written in fixed-size blocks
+/// - Data is written in fixed-size blocks (record-aligned)
 /// - When a block is full, a new one is created
 /// - All blocks are linked via a DL block
+/// - For compressed blocks, an HL block wraps the DL
 /// - On finalize, optionally compact into a single block
+///
+/// Block hierarchy produced:
+/// - Uncompressed: DG → DL → [DT₁, DT₂, ..., DTₙ]
+/// - Compressed:   DG → HL → DL → [DZ₁, DZ₂, ..., DZₙ]
 #[derive(Debug)]
 pub struct DataBlockChain {
     /// Configuration
@@ -654,6 +679,9 @@ pub struct DataBlockChain {
     dl_block_offset: Option<u64>,
     /// Total bytes written
     total_bytes: u64,
+    /// Record size in bytes (record_size + rec_id_size) for alignment.
+    /// When 0, no alignment is enforced.
+    record_size: u32,
 }
 
 impl DataBlockChain {
@@ -665,6 +693,43 @@ impl DataBlockChain {
             blocks: Vec::new(),
             dl_block_offset: None,
             total_bytes: 0,
+            record_size: 0,
+        }
+    }
+
+    /// Create a new data block chain with record size for alignment
+    pub fn with_record_size(config: StreamingConfig, record_size: u32) -> Self {
+        Self {
+            config,
+            current_buffer: Vec::new(),
+            blocks: Vec::new(),
+            dl_block_offset: None,
+            total_bytes: 0,
+            record_size,
+        }
+    }
+
+    /// Set the record size for alignment
+    pub fn set_record_size(&mut self, record_size: u32) {
+        self.record_size = record_size;
+    }
+
+    /// Get the effective maximum uncompressed block size.
+    /// For compressed mode: min(block_size, 4MB), aligned to record boundaries.
+    /// For uncompressed mode: block_size, aligned to record boundaries.
+    fn effective_block_size(&self) -> u64 {
+        let base = if self.config.enable_compression {
+            self.config.block_size.min(MAX_DZ_UNCOMPRESSED_SIZE)
+        } else {
+            self.config.block_size
+        };
+
+        // Align down to record boundary
+        if self.record_size > 0 {
+            let rs = self.record_size as u64;
+            (base / rs) * rs
+        } else {
+            base
         }
     }
 
@@ -675,7 +740,7 @@ impl DataBlockChain {
 
     /// Check if the current buffer is full
     pub fn is_buffer_full(&self) -> bool {
-        self.current_buffer.len() as u64 >= self.config.block_size
+        self.current_buffer.len() as u64 >= self.effective_block_size()
     }
 
     /// Append record data to the current buffer
@@ -703,6 +768,11 @@ impl DataBlockChain {
         self.dl_block_offset
     }
 
+    /// Check if any blocks in the chain are compressed
+    pub fn has_compressed_blocks(&self) -> bool {
+        self.blocks.iter().any(|b| b.compressed)
+    }
+
     /// Finalize the current buffer as a new block
     /// Returns the offset of the written block
     pub fn finalize_current_block<W: Write + Seek>(&mut self, writer: &mut BlockWriter<W>) -> WriteResult<Option<u64>> {
@@ -718,7 +788,6 @@ impl DataBlockChain {
             && data_len >= self.config.compression_threshold;
 
         let offset = if should_compress {
-            // Compress and write DZ block
             let compressor = super::compression::Compressor {
                 compression_type: super::compression::CompressionType::Deflate,
                 level: self.config.compression_level,
@@ -739,12 +808,142 @@ impl DataBlockChain {
 
         self.blocks.push(DataBlockInfo {
             offset,
-            size: 0, // Will be calculated during finalize
+            size: 0,
             compressed: should_compress,
         });
 
         self.total_bytes += data_len;
         Ok(Some(offset))
+    }
+
+    /// Split data into record-aligned chunks and write each as a DT or DZ block.
+    /// Then create DL block (and HL block if compressed).
+    /// Returns the top-level offset (HL for compressed, DL for uncompressed).
+    pub fn write_chunked_chain<W: Write + Seek>(
+        &mut self,
+        writer: &mut BlockWriter<W>,
+        data: Vec<u8>,
+    ) -> WriteResult<u64> {
+        let effective_size = self.effective_block_size() as usize;
+        let total_data_len = data.len() as u64;
+
+        // Split data into record-aligned chunks
+        let chunks = if self.record_size > 0 && effective_size > 0 {
+            self.split_record_aligned(&data, effective_size)
+        } else if effective_size > 0 {
+            // No record alignment, just split by size
+            data.chunks(effective_size)
+                .map(|c| c.to_vec())
+                .collect::<Vec<_>>()
+        } else {
+            vec![data]
+        };
+
+        // Reset blocks for this chain
+        self.blocks.clear();
+        self.total_bytes = 0;
+
+        // Decide compression once based on total data size, not per-chunk
+        let should_compress = self.config.enable_compression
+            && total_data_len >= self.config.compression_threshold;
+        let mut chunk_sizes: Vec<u64> = Vec::new();
+
+        // Write each chunk as DT or DZ
+        for chunk in chunks {
+            let chunk_len = chunk.len() as u64;
+            chunk_sizes.push(chunk_len);
+
+            let offset = if should_compress {
+                let compressor = super::compression::Compressor {
+                    compression_type: super::compression::CompressionType::Deflate,
+                    level: self.config.compression_level,
+                    column_count: None,
+                };
+                let (compressed_data, original_len) = compressor.compress(&chunk)?;
+                let dz = super::block_writer::DzBlock {
+                    dz_org_data_length: original_len,
+                    dz_data_length: compressed_data.len() as u64,
+                    dz_zip_type: 0,
+                    dz_zip_parameter: 0,
+                    data: compressed_data,
+                };
+                let off = writer.write_dz_block(&dz)?;
+                self.blocks.push(DataBlockInfo {
+                    offset: off,
+                    size: 0,
+                    compressed: true,
+                });
+                off
+            } else {
+                let off = writer.write_dt_block(&super::block_writer::DtBlock::new(chunk))?;
+                self.blocks.push(DataBlockInfo {
+                    offset: off,
+                    size: 0,
+                    compressed: false,
+                });
+                off
+            };
+
+            self.total_bytes += chunk_len;
+        }
+
+        // Compute cumulative byte offsets within the concatenated uncompressed data
+        let mut data_offsets: Vec<u64> = Vec::with_capacity(chunk_sizes.len());
+        let mut cumulative = 0u64;
+        for sz in &chunk_sizes {
+            data_offsets.push(cumulative);
+            cumulative += sz;
+        }
+
+        // Write DL block linking all data blocks
+        let links: Vec<u64> = self.blocks.iter().map(|b| b.offset).collect();
+        let dl_offset = writer.write_dl_block(&links, &data_offsets)?;
+
+        // If any blocks are compressed, wrap with HL
+        if self.has_compressed_blocks() {
+            let hl = super::block_writer::HlBlock {
+                hl_dl_first: dl_offset,
+                hl_flags: 0,
+                hl_zip_type: 0, // Deflate
+            };
+            let hl_offset = writer.write_hl_block(&hl)?;
+            Ok(hl_offset)
+        } else {
+            Ok(dl_offset)
+        }
+    }
+
+    /// Split data into record-aligned chunks of at most `max_size` bytes.
+    fn split_record_aligned(&self, data: &[u8], max_size: usize) -> Vec<Vec<u8>> {
+        let rs = self.record_size as usize;
+        if rs == 0 || data.is_empty() {
+            return vec![data.to_vec()];
+        }
+
+        let mut chunks = Vec::new();
+        let mut offset = 0;
+
+        while offset < data.len() {
+            let remaining = data.len() - offset;
+            let chunk_size = if remaining <= max_size {
+                remaining
+            } else {
+                // Round down to record boundary
+                (max_size / rs) * rs
+            };
+
+            if chunk_size == 0 {
+                // Record is larger than max_size — take one full record
+                let single_record = remaining.min(rs);
+                chunks.push(data[offset..offset + single_record].to_vec());
+                offset += single_record;
+            } else {
+                chunks.push(data[offset..offset + chunk_size].to_vec());
+                offset += chunk_size;
+            }
+        }
+
+        chunks
     }
 
     /// Write all blocks and create DL block
@@ -755,7 +954,9 @@ impl DataBlockChain {
 
         // Create DL block linking all data blocks
         let links: Vec<u64> = self.blocks.iter().map(|b| b.offset).collect();
-        let dl_offset = writer.write_dl_block(&links)?;
+        // Compute cumulative data offsets (we don't have sizes tracked, use 0s as placeholder)
+        let data_offsets: Vec<u64> = vec![0u64; links.len()];
+        let dl_offset = writer.write_dl_block(&links, &data_offsets)?;
 
         Ok(dl_offset)
     }
@@ -770,7 +971,6 @@ impl DataBlockChain {
             && data_len >= self.config.compression_threshold;
 
         let offset = if should_compress {
-            // Compress and write DZ block
             let compressor = super::compression::Compressor {
                 compression_type: super::compression::CompressionType::Deflate,
                 level: self.config.compression_level,
@@ -986,8 +1186,9 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
         if self.state != WriterState::Initialized {
             return Err(WriteError::AlreadyFinalized);
         }
-        // Propagate configuration to data group
-        dg.data_chain = DataBlockChain::new(self.config.clone());
+        // Propagate configuration to data group, preserving record_size
+        let record_size = dg.data_chain.record_size;
+        dg.data_chain = DataBlockChain::with_record_size(self.config.clone(), record_size);
         self.data_groups.push(dg);
         Ok(())
     }
@@ -1369,19 +1570,22 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
     /// Finalize the file with optional compacting
     ///
     /// # Arguments
-    /// * `compact` - If true, merge all data blocks into a single DT block
-    ///               If false, keep the DL block chain as-is
+    /// * `compact` - If true, merge all data into a single DT/DZ block.
+    ///               If false, split data into record-aligned chunks linked by DL.
     ///
     /// # Details
     /// When `compact` is true:
-    /// - All data blocks are read and merged into one
-    /// - A single DT block is written
-    /// - File size is minimized
+    /// - A single DT block (or DZ if compression enabled) is written
+    /// - DG.dg_data → DT or DZ
     ///
-    /// When `compact` is false:
-    /// - A DL block is written linking all DT/DZ blocks
-    /// - No data is moved
-    /// - Faster finalize, but file may have multiple blocks
+    /// When `compact` is false (stream write mode):
+    /// - Data is split into record-aligned chunks
+    /// - Each chunk becomes a DT block (or DZ block if compressed)
+    /// - A DL block links all data blocks
+    /// - If compressed: DG.dg_data → HL → DL → [DZ₁, DZ₂, ...]
+    /// - If uncompressed: DG.dg_data → DL → [DT₁, DT₂, ...]
+    /// - Each DZ block's uncompressed size ≤ 4MB
+    /// - No record spans two data blocks
     pub fn finalize_with_compact(&mut self, compact: bool) -> WriteResult<()> {
         if self.state == WriterState::Finalized {
             return Err(WriteError::AlreadyFinalized);
@@ -1412,12 +1616,11 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
             let cycle_count = dg.cycle_counts.iter().sum();
             let data_len = data.len() as u64;
 
-            // Check if compression should be used
-            let should_compress = self.config.enable_compression
-                && data_len >= self.config.compression_threshold;
-
             if compact {
-                // Write single block (DT or DZ depending on compression)
+                // Compact mode: write a single DT or DZ block
+                let should_compress = self.config.enable_compression
+                    && data_len >= self.config.compression_threshold;
+
                 let block_offset = if should_compress {
                     let compressor = super::compression::Compressor {
                         compression_type: super::compression::CompressionType::Deflate,
@@ -1437,24 +1640,29 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
                     block_writer.write_dt_block(&super::block_writer::DtBlock::new(data))?
                 };
 
-                // Update DG data link
+                // Update DG data link → single block
                 if let Some(dg_off) = dg.dg_offset {
                     let dg_data_offset = dg_off + 24 + 16; // After header + dg_dg_next + dg_cg_first
                     block_writer.update_link(dg_data_offset, block_offset)?;
                 }
             } else {
-                // Write DT block (non-compact mode)
-                let dt_offset = block_writer.write_dt_block(&super::block_writer::DtBlock::new(data))?;
+                // Non-compact (stream write) mode:
+                // Split data into record-aligned chunks and write as DL chain.
+                // DataBlockChain handles chunk splitting, DZ/DT writing, DL + HL creation.
+                let top_offset = dg.data_chain.write_chunked_chain(
+                    &mut block_writer,
+                    data,
+                )?;
 
-                // For single block, no DL needed
+                // Update DG data link → top-level block (DL or HL)
                 if let Some(dg_off) = dg.dg_offset {
-                    let dg_data_offset = dg_off + 24 + 16; // After header + dg_dg_next + dg_cg_first
-                    block_writer.update_link(dg_data_offset, dt_offset)?;
+                    let dg_data_offset = dg_off + 24 + 16;
+                    block_writer.update_link(dg_data_offset, top_offset)?;
                 }
             }
 
             // 3. Update cycle counts in CG blocks
-            for (cg_idx, cg) in dg.channel_groups.iter().enumerate() {
+            for (cg_idx, _cg) in dg.channel_groups.iter().enumerate() {
                 if let Some(&cg_offset) = self.cg_offsets.get(dg_idx).and_then(|v| v.get(cg_idx)) {
                     // CG cycle_count data field is at offset 80 from CG block start
                     // (24 header + 48 links + 8 record_id = 80)
@@ -1480,27 +1688,6 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
 
         self.flush()?;
         self.state = WriterState::Finalized;
-        Ok(())
-    }
-
-    /// Compact all data blocks into a single block
-    ///
-    /// This method is called during finalize when compact=true.
-    /// Currently, streaming writes only use a single buffer, so compacting
-    /// is already the default behavior. This method exists for future
-    /// extension when multiple blocks may be written during streaming.
-    fn compact_file(&mut self) -> WriteResult<()> {
-        // In the current implementation, we only have one buffer per DG,
-        // so compacting is automatic. This method is here for future
-        // support of multi-block streaming writes.
-
-        // Future implementation would:
-        // 1. Read all DT/DZ blocks from the DL chain
-        // 2. Merge all data into a single buffer
-        // 3. Write a single DT block
-        // 4. Update DG.dg_data to point to new block
-        // 5. Optionally rewrite the file to remove old blocks
-
         Ok(())
     }
 

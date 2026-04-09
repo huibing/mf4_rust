@@ -333,6 +333,24 @@ pub struct DzBlock {
 }
 
 // ============================================================================
+// HL Block (Header List)
+// ============================================================================
+
+/// HL Block (Header List for compressed data with DL chain)
+///
+/// When DZ blocks are linked via DL, the DG must point to an HL block,
+/// which then points to the first DL block. This is required by the MDF4 spec.
+#[derive(Debug, Clone)]
+pub struct HlBlock {
+    /// Offset to first DL block
+    pub hl_dl_first: u64,
+    /// Flags (UINT16)
+    pub hl_flags: u16,
+    /// Compression type: 0=Deflate, 1=Transpose+Deflate
+    pub hl_zip_type: u8,
+}
+
+// ============================================================================
 // CC Block (Conversion)
 // ============================================================================
 
@@ -806,7 +824,7 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
 
         // DZ block structure per MDF spec:
         // Header: 24 bytes (id + reserved + length + link_count)
-        // Link: 8 bytes (dz_data)
+        // Links: 0 (DZ has no links per MDF4 spec)
         // Data fields:
         //   dz_org_block_type: 2 bytes (CHAR) - "DT" for data block
         //   dz_zip_type: 1 byte (UINT8) - 0=Deflate, 1=Transpose+Deflate
@@ -814,9 +832,9 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
         //   dz_zip_parameter: 4 bytes (UINT32) - column count for transpose
         //   dz_org_data_length: 8 bytes (UINT64) - original uncompressed size
         //   dz_data_length: 8 bytes (UINT64) - compressed size
-        // Total header: 24 + 8 + 2 + 1 + 1 + 4 + 8 + 8 = 56 bytes, plus data
+        // Total header: 24 + 0 + 2 + 1 + 1 + 4 + 8 + 8 = 48 bytes, plus data
 
-        let block_len = 24u64 + 8 + 2 + 1 + 1 + 4 + 8 + 8 + dz.data.len() as u64;
+        let block_len = 48u64 + dz.data.len() as u64;
 
         // Block ID
         self.writer.write_all(block_id::DZ)?;
@@ -824,12 +842,8 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
         self.writer.write_all(&[0u8; 4])?;
         // Block length
         self.writer.write_all(&block_len.to_le_bytes())?;
-        // Link count (1 - dz_data)
-        self.writer.write_all(&1u64.to_le_bytes())?;
-
-        // dz_data link (points to the data after this header)
-        let data_offset = offset + 24 + 8 + 2 + 1 + 1 + 4 + 8 + 8;
-        self.writer.write_all(&data_offset.to_le_bytes())?;
+        // Link count (0 - DZ has no links)
+        self.writer.write_all(&0u64.to_le_bytes())?;
 
         // Data fields (in MDF spec order)
         // dz_org_block_type: 2 bytes CHAR - "DT" indicates compressed DT block
@@ -866,14 +880,22 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
     /// # Example
     /// ```ignore
     /// let links = vec![dt1_offset, dt2_offset, dt3_offset];
-    /// let dl_offset = writer.write_dl_block(&links)?;
+    /// let offsets = vec![0, 1024, 2048]; // cumulative byte offsets
+    /// let dl_offset = writer.write_dl_block(&links, &offsets)?;
     /// // Now DG.dg_data should point to dl_offset
     /// ```
-    pub fn write_dl_block(&mut self, links: &[u64]) -> WriteResult<u64> {
+    /// Write a DL block with per-block byte offsets.
+    ///
+    /// `links` - file offsets to DT/DZ blocks
+    /// `data_offsets` - cumulative byte offset within the uncompressed data for each block
+    pub fn write_dl_block(&mut self, links: &[u64], data_offsets: &[u64]) -> WriteResult<u64> {
         let offset = self.align_to_8()?;
 
         let link_count = links.len() as u64 + 1; // +1 for dl_dl_next
-        let block_len = 24 + link_count * 8 + 1 + 3 + 4; // header + links + flags + reserved + count
+        let dl_count = links.len() as u32;
+        // data section: flags(1) + reserved(3) + count(4) + offsets(dl_count * 8)
+        let data_section_len = 1 + 3 + 4 + (dl_count as u64) * 8;
+        let block_len = 24 + link_count * 8 + data_section_len;
 
         // Block ID
         self.writer.write_all(block_id::DL)?;
@@ -892,15 +914,59 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
             self.writer.write_all(&link.to_le_bytes())?;
         }
 
-        // dl_flags (0 = equal length not used, no time/angle/distance values)
+        // dl_flags (0 = no equal length, no time/angle/distance values)
         self.writer.write_all(&[0u8; 1])?;
         // Reserved (3 bytes)
         self.writer.write_all(&[0u8; 3])?;
         // dl_count (number of data blocks)
-        self.writer.write_all(&(links.len() as u32).to_le_bytes())?;
+        self.writer.write_all(&dl_count.to_le_bytes())?;
+        // dl_offset (byte offsets within concatenated uncompressed data)
+        for off in data_offsets {
+            self.writer.write_all(&off.to_le_bytes())?;
+        }
 
         // Align to 8 bytes
         self.align_to_8()?;
+
+        self.current_offset = self.writer.stream_position()?;
+        Ok(offset)
+    }
+
+    /// Write HL block (Header List for compressed DL chains)
+    ///
+    /// HL block is required when DZ blocks are linked via DL. The hierarchy is:
+    /// DG.dg_data → HL → DL → DZ blocks
+    ///
+    /// # Arguments
+    /// * `hl` - HL block data containing the link to the first DL block
+    pub fn write_hl_block(&mut self, hl: &HlBlock) -> WriteResult<u64> {
+        let offset = self.align_to_8()?;
+
+        // HL block layout:
+        // Header: 24 bytes (id[4] + reserved[4] + length[8] + link_count[8])
+        // Links: 1 × 8 = 8 bytes (hl_dl_first)
+        // Data: hl_flags(2) + hl_zip_type(1) + reserved(5) = 8 bytes
+        // Total: 24 + 8 + 8 = 40 bytes
+        let block_len = 40u64;
+
+        // Block ID
+        self.writer.write_all(block_id::HL)?;
+        // Reserved (4 bytes)
+        self.writer.write_all(&[0u8; 4])?;
+        // Block length
+        self.writer.write_all(&block_len.to_le_bytes())?;
+        // Link count (1 - hl_dl_first)
+        self.writer.write_all(&1u64.to_le_bytes())?;
+
+        // hl_dl_first link
+        self.writer.write_all(&hl.hl_dl_first.to_le_bytes())?;
+
+        // hl_flags: 2 bytes UINT16
+        self.writer.write_all(&hl.hl_flags.to_le_bytes())?;
+        // hl_zip_type: 1 byte UINT8
+        self.writer.write_all(&hl.hl_zip_type.to_le_bytes())?;
+        // hl_reserved: 5 bytes
+        self.writer.write_all(&[0u8; 5])?;
 
         self.current_offset = self.writer.stream_position()?;
         Ok(offset)

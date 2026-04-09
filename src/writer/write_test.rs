@@ -1419,4 +1419,806 @@ mod tests {
 
         println!("Time series demo acq_source verification passed!");
     }
+
+    // ========================================================================
+    // DL-chained stream write tests (HL→DL→DZ / DL→DT)
+    // ========================================================================
+
+    /// Helper: read 4 bytes at a file offset and return the block ID string (e.g. "##DT")
+    fn read_block_id(path: &PathBuf, offset: u64) -> String {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(path).unwrap();
+        f.seek(SeekFrom::Start(offset)).unwrap();
+        let mut buf = [0u8; 4];
+        f.read_exact(&mut buf).unwrap();
+        String::from_utf8(buf.to_vec()).unwrap()
+    }
+
+    /// Helper: read a u64 little-endian value at a file offset
+    fn read_u64_at(path: &PathBuf, offset: u64) -> u64 {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut f = std::fs::File::open(path).unwrap();
+        f.seek(SeekFrom::Start(offset)).unwrap();
+        let mut buf = [0u8; 8];
+        f.read_exact(&mut buf).unwrap();
+        u64::from_le_bytes(buf)
+    }
+
+    /// Helper: create a stream writer with the given config, write N records of 2xf64
+    /// (time + signal), finalize, and return the output path.
+    fn write_stream_file(
+        filename: &str,
+        config: StreamingConfig,
+        num_records: usize,
+        compact: bool,
+    ) -> PathBuf {
+        let output_path = PathBuf::from(filename);
+        cleanup_test_file(&output_path);
+
+        let metadata = Mf4Metadata::default();
+        let mut writer = Mf4StreamWriter::with_config(
+            output_path.clone(),
+            metadata,
+            config,
+        ).unwrap();
+
+        let time_def = ChannelDef::new_master("time");
+        let signal_def = ChannelDef::new("Signal")
+            .data_type(4) // FLOAT64
+            .unit("V");
+
+        let cg_def = ChannelGroupDef::builder()
+            .name("Measurement")
+            .master(time_def)
+            .channel(signal_def)
+            .build()
+            .unwrap();
+
+        let dg = StreamingDataGroup::new(cg_def).unwrap();
+        writer.add_data_group(dg).unwrap();
+        writer.finalize_structure().unwrap();
+
+        for i in 0..num_records {
+            writer.start_record(0, 0).unwrap();
+            writer.set_channel_value("time", i as f64 * 0.001).unwrap();
+            writer.set_channel_value("Signal", (i as f64 * 0.1).sin()).unwrap();
+            writer.flush_record().unwrap();
+        }
+
+        writer.finalize_with_compact(compact).unwrap();
+        output_path
+    }
+
+    /// Test: Non-compact stream write produces DL→DT chain (no compression).
+    ///
+    /// With a small block_size (e.g. 100 bytes) and enough records, data should
+    /// be split into multiple DT blocks linked by a DL block. The DG.dg_data
+    /// link should point to a ##DL block.
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_stream_write_dl_chain_uncompressed() {
+        let config = StreamingConfig::new()
+            .with_block_size(100); // Very small blocks to force multiple DT blocks
+
+        // Each record = 16 bytes (2 x f64). 100 records = 1600 bytes.
+        // With 100-byte block_size we expect ~16 DT blocks linked by DL.
+        let output_path = write_stream_file(
+            "temp_dl_chain_uncomp.mf4",
+            config,
+            100,
+            false, // non-compact
+        );
+
+        // Verify the file was created
+        assert!(output_path.exists(), "Output file should exist");
+
+        // Read the DG block's dg_data link.
+        // DG block layout: 24-byte header, then links: dg_dg_next(8) + dg_cg_first(8) + dg_data(8)
+        // So dg_data is at dg_offset + 24 + 16
+        // We need to find the DG offset. HD is at offset 64 (after 64-byte ID block).
+        // HD layout: 24-byte header, then links: hd_dg_first(8)
+        // So hd_dg_first is at 64 + 24 = 88
+        let dg_offset = read_u64_at(&output_path, 88);
+        assert!(dg_offset > 0, "DG offset should be non-zero");
+
+        let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
+        assert!(dg_data_offset > 0, "DG data link should be non-zero");
+
+        // The data link should point to a DL block
+        let block_id = read_block_id(&output_path, dg_data_offset);
+        assert_eq!(block_id, "##DL", "DG.dg_data should point to a ##DL block");
+
+        // Read back with Mf4Wrapper and verify data
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+        let channels = mf4.get_channel_names();
+        assert!(channels.contains(&"Signal".to_string()));
+
+        let data = mf4.get_channel_data("Signal").unwrap();
+        assert_eq!(data.len(), 100, "Should have 100 samples");
+
+        // Verify time channel via master data
+        let time_data = mf4.get_channel_master_data("Signal").unwrap();
+        assert_eq!(time_data.len(), 100);
+
+        // Verify first and last time values
+        if let crate::DataValue::REAL(ref vals) = time_data {
+            assert!((vals[0] - 0.0).abs() < 1e-10, "First time should be 0.0");
+            assert!((vals[99] - 0.099).abs() < 1e-10, "Last time should be 0.099");
+        } else {
+            panic!("Expected REAL data for time");
+        }
+
+        // Verify signal values
+        if let crate::DataValue::REAL(ref vals) = data {
+            for i in 0..100 {
+                let expected = (i as f64 * 0.1).sin();
+                assert!(
+                    (vals[i] - expected).abs() < 1e-10,
+                    "Signal[{}]: expected {}, got {}",
+                    i, expected, vals[i]
+                );
+            }
+        } else {
+            panic!("Expected REAL data for Signal");
+        }
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: Non-compact stream write with compression produces HL→DL→DZ chain.
+    ///
+    /// When compression is enabled and data is split into multiple blocks,
+    /// DG.dg_data should point to a ##HL block (not directly to DL or DZ).
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_stream_write_hl_dl_dz_chain() {
+        let config = StreamingConfig::new()
+            .with_block_size(200)
+            .with_compression()
+            .with_compression_threshold(0);
+
+        // 200 records × 16 bytes = 3200 bytes, with 200-byte block we get ~16 blocks
+        let output_path = write_stream_file(
+            "temp_hl_dl_dz_chain.mf4",
+            config,
+            200,
+            false, // non-compact
+        );
+
+        assert!(output_path.exists());
+
+        // Read DG.dg_data
+        let dg_offset = read_u64_at(&output_path, 88);
+        let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
+        assert!(dg_data_offset > 0);
+
+        // Should point to HL block
+        let block_id = read_block_id(&output_path, dg_data_offset);
+        assert_eq!(block_id, "##HL", "DG.dg_data should point to ##HL when compressed + DL chain");
+
+        // HL block layout: 24 header + 8 link_count + 8 hl_dl_first link = ...
+        // Actually: 24 header bytes, then 1 link (hl_dl_first) at offset 24
+        let hl_dl_first = read_u64_at(&output_path, dg_data_offset + 24);
+        assert!(hl_dl_first > 0, "HL should link to a DL block");
+
+        let dl_block_id = read_block_id(&output_path, hl_dl_first);
+        assert_eq!(dl_block_id, "##DL", "HL.hl_dl_first should point to ##DL");
+
+        // Check that DL links point to DZ blocks
+        // DL layout: 24 header, then link_count at offset 16
+        // Links start at offset 24: dl_dl_next(8), then dl_data[0..N](8 each)
+        let dl_link_count = read_u64_at(&output_path, hl_dl_first + 16);
+        assert!(dl_link_count >= 2, "DL should have at least 2 links (1 for dl_next + at least 1 data)");
+
+        // First data link is at DL offset + 24 + 8 (skip dl_dl_next)
+        let first_dz_offset = read_u64_at(&output_path, hl_dl_first + 24 + 8);
+        let dz_block_id = read_block_id(&output_path, first_dz_offset);
+        assert_eq!(dz_block_id, "##DZ", "DL data links should point to ##DZ blocks");
+
+        // Round-trip read back
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+        let data = mf4.get_channel_data("Signal").unwrap();
+        assert_eq!(data.len(), 200, "Should have 200 samples after round-trip");
+
+        if let crate::DataValue::REAL(ref vals) = data {
+            for i in 0..200 {
+                let expected = (i as f64 * 0.1).sin();
+                assert!(
+                    (vals[i] - expected).abs() < 1e-10,
+                    "Signal[{}] mismatch: expected {}, got {}",
+                    i, expected, vals[i]
+                );
+            }
+        } else {
+            panic!("Expected REAL data for Signal");
+        }
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: Each DZ block's uncompressed size must not exceed 4MB.
+    ///
+    /// Write enough data to exceed 4MB total, verify each DZ block
+    /// in the chain respects the limit.
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_dz_block_size_limit_4mb() {
+        use std::io::{Read, Seek, SeekFrom};
+
+        // Each record = 16 bytes (2 × f64).
+        // 4MB = 4,194,304 bytes → 262,144 records to fill one DZ block.
+        // Write 400,000 records (~6.1 MB) so we need at least 2 DZ blocks.
+        let config = StreamingConfig::new()
+            .with_block_size(8_000_000) // 8MB block_size, but DZ should clamp to 4MB
+            .with_compression()
+            .with_compression_threshold(0);
+
+        let output_path = write_stream_file(
+            "temp_dz_4mb_limit.mf4",
+            config,
+            400_000,
+            false,
+        );
+
+        assert!(output_path.exists());
+
+        // Navigate to DG → HL → DL → DZ blocks
+        let dg_offset = read_u64_at(&output_path, 88);
+        let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
+        let hl_id = read_block_id(&output_path, dg_data_offset);
+        assert_eq!(hl_id, "##HL");
+
+        let dl_offset = read_u64_at(&output_path, dg_data_offset + 24);
+        let dl_id = read_block_id(&output_path, dl_offset);
+        assert_eq!(dl_id, "##DL");
+
+        // Read DL link count and iterate over DZ blocks
+        let dl_link_count = read_u64_at(&output_path, dl_offset + 16) as usize;
+        let num_data_blocks = dl_link_count - 1; // subtract dl_dl_next
+        assert!(num_data_blocks >= 2, "Should have at least 2 DZ blocks for >4MB data");
+
+        let max_dz_uncompressed: u64 = 4 * 1024 * 1024;
+
+        for i in 0..num_data_blocks {
+            let dz_offset = read_u64_at(&output_path, dl_offset + 24 + 8 * (i as u64 + 1));
+            if dz_offset == 0 {
+                break;
+            }
+
+            let dz_id = read_block_id(&output_path, dz_offset);
+            assert_eq!(dz_id, "##DZ", "Block {} should be ##DZ", i);
+
+            // DZ data fields start at offset 24 (0 links per MDF4 spec)
+            // dz_org_block_type (2) + dz_zip_type (1) + dz_reserved (1) + dz_zip_parameter (4) = 8
+            // Then dz_org_data_length at offset 24 + 8 = 32
+            let dz_org_data_length = read_u64_at(&output_path, dz_offset + 32);
+            assert!(
+                dz_org_data_length <= max_dz_uncompressed,
+                "DZ block {} original length {} exceeds 4MB limit {}",
+                i, dz_org_data_length, max_dz_uncompressed
+            );
+        }
+
+        // Round-trip verification
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+        let data = mf4.get_channel_data("Signal").unwrap();
+        assert_eq!(data.len(), 400_000, "Should have 400k samples");
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: Records do not span DZ block boundaries.
+    ///
+    /// Each DZ block's uncompressed size must be a multiple of the record size,
+    /// ensuring no record is split across two DZ blocks.
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_record_alignment_in_dz_blocks() {
+        use std::io::{Read, Seek, SeekFrom};
+
+        // Use a record size that doesn't divide evenly into typical block sizes.
+        // 3 channels × f64 = 24 bytes per record.
+        let config = StreamingConfig::new()
+            .with_block_size(500) // 500 / 24 = 20.83... not evenly divisible
+            .with_compression()
+            .with_compression_threshold(0);
+
+        let output_path = PathBuf::from("temp_record_align.mf4");
+        cleanup_test_file(&output_path);
+
+        let metadata = Mf4Metadata::default();
+        let mut writer = Mf4StreamWriter::with_config(
+            output_path.clone(),
+            metadata,
+            config,
+        ).unwrap();
+
+        let time_def = ChannelDef::new_master("time");
+        let ch1 = ChannelDef::new("ChannelA").data_type(4); // f64
+        let ch2 = ChannelDef::new("ChannelB").data_type(4); // f64
+
+        let cg_def = ChannelGroupDef::builder()
+            .name("ThreeChannels")
+            .master(time_def)
+            .channel(ch1)
+            .channel(ch2)
+            .build()
+            .unwrap();
+
+        // Record size = 24 bytes (3 × 8)
+        assert_eq!(cg_def.record_size, 24);
+
+        let dg = StreamingDataGroup::new(cg_def).unwrap();
+        writer.add_data_group(dg).unwrap();
+        writer.finalize_structure().unwrap();
+
+        // Write 100 records = 2400 bytes
+        for i in 0..100 {
+            writer.start_record(0, 0).unwrap();
+            writer.set_channel_value("time", i as f64 * 0.01).unwrap();
+            writer.set_channel_value("ChannelA", i as f64 * 10.0).unwrap();
+            writer.set_channel_value("ChannelB", i as f64 * -5.0).unwrap();
+            writer.flush_record().unwrap();
+        }
+
+        writer.finalize_with_compact(false).unwrap();
+
+        // Navigate to DZ blocks and check each has a size that's a multiple of 24
+        let dg_offset = read_u64_at(&output_path, 88);
+        let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
+
+        // Could be HL or DL depending on compression
+        let top_id = read_block_id(&output_path, dg_data_offset);
+        let dl_offset = if top_id == "##HL" {
+            read_u64_at(&output_path, dg_data_offset + 24)
+        } else {
+            assert_eq!(top_id, "##DL");
+            dg_data_offset
+        };
+
+        let dl_link_count = read_u64_at(&output_path, dl_offset + 16) as usize;
+        let num_data_blocks = dl_link_count - 1;
+
+        let record_size: u64 = 24;
+        for i in 0..num_data_blocks {
+            let block_offset = read_u64_at(&output_path, dl_offset + 24 + 8 * (i as u64 + 1));
+            if block_offset == 0 { break; }
+
+            let block_id = read_block_id(&output_path, block_offset);
+
+            let orig_data_len = if block_id == "##DZ" {
+                // dz_org_data_length at offset 32 from block start
+                // (24 header + 0 links + 2 org_block_type + 1 zip_type + 1 reserved + 4 zip_param = 32)
+                read_u64_at(&output_path, block_offset + 32)
+            } else if block_id == "##DT" {
+                // DT block: total length at offset 8, minus 24 header
+                let block_len = read_u64_at(&output_path, block_offset + 8);
+                block_len - 24
+            } else {
+                panic!("Unexpected block type: {}", block_id);
+            };
+
+            assert_eq!(
+                orig_data_len % record_size, 0,
+                "Block {} ({}): uncompressed size {} is not a multiple of record_size {}",
+                i, block_id, orig_data_len, record_size
+            );
+        }
+
+        // Round-trip read back
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+        let data_a = mf4.get_channel_data("ChannelA").unwrap();
+        assert_eq!(data_a.len(), 100);
+        if let crate::DataValue::REAL(ref vals) = data_a {
+            for i in 0..100 {
+                assert!(
+                    (vals[i] - i as f64 * 10.0).abs() < 1e-10,
+                    "ChannelA[{}] mismatch",
+                    i
+                );
+            }
+        }
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: DL chain round-trip (uncompressed) — write non-compact, read back, verify all data.
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_dl_chain_roundtrip_uncompressed() {
+        let config = StreamingConfig::new()
+            .with_block_size(256); // Small blocks → many DT blocks
+
+        let output_path = write_stream_file(
+            "temp_dl_roundtrip_uncomp.mf4",
+            config,
+            500,
+            false,
+        );
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+
+        // Check channel names
+        let channels = mf4.get_channel_names();
+        assert!(channels.contains(&"Signal".to_string()));
+
+        // Verify all 500 signal values
+        let data = mf4.get_channel_data("Signal").unwrap();
+        assert_eq!(data.len(), 500);
+        if let crate::DataValue::REAL(ref vals) = data {
+            for i in 0..500 {
+                let expected = (i as f64 * 0.1).sin();
+                assert!(
+                    (vals[i] - expected).abs() < 1e-10,
+                    "Roundtrip mismatch at index {}",
+                    i
+                );
+            }
+        } else {
+            panic!("Expected REAL data");
+        }
+
+        // Verify time values
+        let time_data = mf4.get_channel_master_data("Signal").unwrap();
+        assert_eq!(time_data.len(), 500);
+        if let crate::DataValue::REAL(ref vals) = time_data {
+            for i in 0..500 {
+                let expected = i as f64 * 0.001;
+                assert!(
+                    (vals[i] - expected).abs() < 1e-12,
+                    "Time mismatch at index {}",
+                    i
+                );
+            }
+        }
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: DL chain round-trip with compression (HL→DL→DZ) — write and read back.
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_dl_chain_roundtrip_compressed() {
+        let config = StreamingConfig::new()
+            .with_block_size(256)
+            .with_compression()
+            .with_compression_threshold(0);
+
+        let output_path = write_stream_file(
+            "temp_dl_roundtrip_comp.mf4",
+            config,
+            500,
+            false,
+        );
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+
+        let data = mf4.get_channel_data("Signal").unwrap();
+        assert_eq!(data.len(), 500);
+        if let crate::DataValue::REAL(ref vals) = data {
+            for i in 0..500 {
+                let expected = (i as f64 * 0.1).sin();
+                assert!(
+                    (vals[i] - expected).abs() < 1e-10,
+                    "Compressed roundtrip mismatch at index {}",
+                    i
+                );
+            }
+        } else {
+            panic!("Expected REAL data");
+        }
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: Edge case — single record in non-compact mode.
+    ///
+    /// Even with just 1 record, the non-compact path should still produce
+    /// a valid DL (or direct DT) structure that reads back correctly.
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_stream_edge_single_record() {
+        let config = StreamingConfig::new()
+            .with_block_size(100);
+
+        let output_path = write_stream_file(
+            "temp_single_record.mf4",
+            config,
+            1,
+            false,
+        );
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+        let data = mf4.get_channel_data("Signal").unwrap();
+        assert_eq!(data.len(), 1);
+
+        if let crate::DataValue::REAL(ref vals) = data {
+            let expected = (0.0f64).sin(); // sin(0) = 0
+            assert!((vals[0] - expected).abs() < 1e-10);
+        }
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: Compact mode still produces a single DT/DZ block (not DL chain).
+    ///
+    /// With compact=true, regardless of block_size, the final file should have
+    /// DG.dg_data pointing directly to a ##DT or ##DZ block (not ##DL or ##HL).
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_stream_compact_produces_single_block() {
+        let config = StreamingConfig::new()
+            .with_block_size(100); // Small block_size, but compact should merge
+
+        let output_path = write_stream_file(
+            "temp_compact_single.mf4",
+            config,
+            200,
+            true, // compact
+        );
+
+        let dg_offset = read_u64_at(&output_path, 88);
+        let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
+        let block_id = read_block_id(&output_path, dg_data_offset);
+
+        // Compact mode should produce a single DT or DZ block
+        assert!(
+            block_id == "##DT" || block_id == "##DZ",
+            "Compact mode should produce ##DT or ##DZ, got {}",
+            block_id
+        );
+
+        // Verify data round-trips
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+        let data = mf4.get_channel_data("Signal").unwrap();
+        assert_eq!(data.len(), 200);
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: Compact mode with compression produces a single ##DZ block.
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_stream_compact_compressed_single_dz() {
+        let config = StreamingConfig::new()
+            .with_block_size(100)
+            .with_compression()
+            .with_compression_threshold(0);
+
+        let output_path = write_stream_file(
+            "temp_compact_compressed.mf4",
+            config,
+            200,
+            true, // compact
+        );
+
+        let dg_offset = read_u64_at(&output_path, 88);
+        let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
+        let block_id = read_block_id(&output_path, dg_data_offset);
+        assert_eq!(block_id, "##DZ", "Compact + compression should produce ##DZ");
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+        let data = mf4.get_channel_data("Signal").unwrap();
+        assert_eq!(data.len(), 200);
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Test: Multi-CG streaming with DL chain — records from different CGs
+    /// must not be split across DZ block boundaries.
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_stream_multi_cg_dl_chain_roundtrip() {
+        let config = StreamingConfig::new()
+            .with_block_size(200); // Small blocks
+
+        let output_path = PathBuf::from("temp_multi_cg_dl_chain.mf4");
+        cleanup_test_file(&output_path);
+
+        let metadata = Mf4Metadata::default();
+        let mut writer = Mf4StreamWriter::with_config(
+            output_path.clone(),
+            metadata,
+            config,
+        ).unwrap();
+
+        let cg1 = ChannelGroupDef::builder()
+            .name("Fast")
+            .master(ChannelDef::new_master("time_fast"))
+            .channel(ChannelDef::new("RPM").data_type(4))
+            .build()
+            .unwrap();
+
+        let cg2 = ChannelGroupDef::builder()
+            .name("Slow")
+            .master(ChannelDef::new_master("time_slow"))
+            .channel(ChannelDef::new("Temperature").data_type(4))
+            .build()
+            .unwrap();
+
+        let dg = StreamingDataGroup::with_multiple(vec![cg1, cg2]).unwrap();
+        writer.add_data_group(dg).unwrap();
+        writer.finalize_structure().unwrap();
+
+        // Write interleaved records: fast at 100Hz, slow at 10Hz
+        for i in 0..100 {
+            writer.start_record(0, 0).unwrap(); // fast CG
+            writer.set_channel_value("time_fast", i as f64 * 0.01).unwrap();
+            writer.set_channel_value("RPM", 3000.0 + i as f64).unwrap();
+            writer.flush_record().unwrap();
+
+            if i % 10 == 0 {
+                writer.start_record(0, 1).unwrap(); // slow CG
+                writer.set_channel_value("time_slow", i as f64 * 0.01).unwrap();
+                writer.set_channel_value("Temperature", 85.0 + (i as f64) * 0.1).unwrap();
+                writer.flush_record().unwrap();
+            }
+        }
+
+        writer.finalize_with_compact(false).unwrap();
+
+        // Verify DL chain exists
+        let dg_offset = read_u64_at(&output_path, 88);
+        let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
+        let block_id = read_block_id(&output_path, dg_data_offset);
+        assert_eq!(block_id, "##DL", "Multi-CG non-compact should use DL chain");
+
+        // Round-trip verification
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+        let rpm_data = mf4.get_channel_data("RPM").unwrap();
+        assert_eq!(rpm_data.len(), 100, "Should have 100 RPM records");
+
+        let temp_data = mf4.get_channel_data("Temperature").unwrap();
+        // 100 / 10 = 10 slow records (i=0,10,20,...,90)
+        // Actually i % 10 == 0: i=0,10,20,30,40,50,60,70,80,90 → 10 records
+        assert_eq!(temp_data.len(), 10, "Should have 10 Temperature records");
+
+        cleanup_test_file(&output_path);
+    }
+
+    // ============================================================================
+    // Record alignment tests with various record sizes
+    // ============================================================================
+
+    /// Helper: verifies that every DZ/DT block in a DL chain has an uncompressed
+    /// size that's a multiple of the given record_size.
+    /// `num_f64_channels` = number of f64 channels BESIDES the time channel.
+    #[cfg(feature = "streaming")]
+    fn verify_record_alignment_for_size(
+        num_f64_channels: usize,
+        block_size: u64,
+        num_records: usize,
+        file_suffix: &str,
+    ) {
+        let expected_record_size = (1 + num_f64_channels) as u32 * 8; // time + channels, all f64
+
+        let config = StreamingConfig::new()
+            .with_block_size(block_size)
+            .with_compression()
+            .with_compression_threshold(0);
+
+        let output_path = PathBuf::from(format!("temp_align_{}.mf4", file_suffix));
+        cleanup_test_file(&output_path);
+
+        let metadata = Mf4Metadata::default();
+        let mut writer = Mf4StreamWriter::with_config(
+            output_path.clone(), metadata, config,
+        ).unwrap();
+
+        let time_def = ChannelDef::new_master("time");
+        let mut cg_builder = ChannelGroupDef::builder()
+            .name("AlignTest")
+            .master(time_def);
+
+        for ch_idx in 0..num_f64_channels {
+            cg_builder = cg_builder.channel(
+                ChannelDef::new(&format!("ch_{}", ch_idx)).data_type(4) // f64
+            );
+        }
+
+        let cg_def = cg_builder.build().unwrap();
+        assert_eq!(cg_def.record_size, expected_record_size,
+            "Expected record_size={}, got {}", expected_record_size, cg_def.record_size);
+
+        let dg = StreamingDataGroup::new(cg_def).unwrap();
+        writer.add_data_group(dg).unwrap();
+        writer.finalize_structure().unwrap();
+
+        for i in 0..num_records {
+            writer.start_record(0, 0).unwrap();
+            writer.set_channel_value("time", i as f64 * 0.001).unwrap();
+            for c in 0..num_f64_channels {
+                writer.set_channel_value(&format!("ch_{}", c), (i * (c + 1)) as f64).unwrap();
+            }
+            writer.flush_record().unwrap();
+        }
+
+        writer.finalize_with_compact(false).unwrap();
+
+        // Navigate to data blocks and check alignment
+        let dg_offset = read_u64_at(&output_path, 88);
+        let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
+
+        let top_id = read_block_id(&output_path, dg_data_offset);
+        let dl_offset = if top_id == "##HL" {
+            read_u64_at(&output_path, dg_data_offset + 24)
+        } else {
+            assert_eq!(top_id, "##DL");
+            dg_data_offset
+        };
+
+        let dl_link_count = read_u64_at(&output_path, dl_offset + 16) as usize;
+        let num_data_blocks = dl_link_count - 1;
+        assert!(num_data_blocks >= 1, "Expected at least 1 data block");
+
+        let mut total_uncompressed = 0u64;
+        for i in 0..num_data_blocks {
+            let block_offset = read_u64_at(&output_path, dl_offset + 24 + 8 * (i as u64 + 1));
+            if block_offset == 0 { break; }
+
+            let block_id = read_block_id(&output_path, block_offset);
+            let orig_data_len = if block_id == "##DZ" {
+                read_u64_at(&output_path, block_offset + 32)
+            } else if block_id == "##DT" {
+                let block_len = read_u64_at(&output_path, block_offset + 8);
+                block_len - 24
+            } else {
+                panic!("Unexpected block type: {}", block_id);
+            };
+
+            assert_eq!(
+                orig_data_len % expected_record_size as u64, 0,
+                "record_size={}: Block {} ({}): uncompressed size {} is not a multiple of record_size",
+                expected_record_size, i, block_id, orig_data_len
+            );
+            total_uncompressed += orig_data_len;
+        }
+
+        let expected_total = num_records as u64 * expected_record_size as u64;
+        assert_eq!(total_uncompressed, expected_total,
+            "record_size={}: total uncompressed {} != expected {}",
+            expected_record_size, total_uncompressed, expected_total);
+
+        // Round-trip read back — verify data channel
+        // Note: master/time channel is accessed separately, not via get_channel_data
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+
+        if num_f64_channels > 0 {
+            let ch0_data = mf4.get_channel_data("ch_0").unwrap();
+            assert_eq!(ch0_data.len(), num_records,
+                "record_size={}: expected {} records, got {}",
+                expected_record_size, num_records, ch0_data.len());
+            if let crate::DataValue::REAL(ref vals) = ch0_data {
+                for i in 0..num_records.min(10) {
+                    assert!((vals[i] - i as f64).abs() < 1e-10,
+                        "ch_0[{}] mismatch: expected {}, got {}", i, i as f64, vals[i]);
+                }
+            }
+        }
+
+        cleanup_test_file(&output_path);
+    }
+
+    /// Record alignment with 40-byte records (time + 4×f64). 500/40 = 12.5 — not exact
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_record_alignment_40_bytes() {
+        verify_record_alignment_for_size(4, 500, 200, "40b");
+    }
+
+    /// Record alignment with 56-byte records (time + 6×f64). 1000/56 = 17.86 — not exact
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_record_alignment_56_bytes() {
+        verify_record_alignment_for_size(6, 1000, 300, "56b");
+    }
+
+    /// Record alignment with 104-byte records (time + 12×f64). 700/104 = 6.73 — not exact
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_record_alignment_104_bytes() {
+        verify_record_alignment_for_size(12, 700, 150, "104b_700");
+        // Also test with a block size that IS an exact multiple (832 = 8 × 104)
+        verify_record_alignment_for_size(12, 832, 150, "104b_832");
+    }
 }
