@@ -301,6 +301,61 @@ impl ChannelGroupDefBuilder {
         self
     }
 
+    /// Set master time channel (shorthand for `.master(ChannelDef::new_master(name))`)
+    pub fn with_time_channel(self, name: &str) -> Self {
+        self.master(ChannelDef::new_master(name))
+    }
+
+    /// Add an f64 data channel (FLOAT64 LE, 64-bit)
+    pub fn add_f64_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(4).bit_count(64).unit(unit))
+    }
+
+    /// Add an f32 data channel (FLOAT32 LE, 32-bit)
+    pub fn add_f32_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(4).bit_count(32).unit(unit))
+    }
+
+    /// Add a u8 data channel (UINT LE, 8-bit)
+    pub fn add_u8_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(0).bit_count(8).unit(unit))
+    }
+
+    /// Add a u16 data channel (UINT LE, 16-bit)
+    pub fn add_u16_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(0).bit_count(16).unit(unit))
+    }
+
+    /// Add a u32 data channel (UINT LE, 32-bit)
+    pub fn add_u32_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(0).bit_count(32).unit(unit))
+    }
+
+    /// Add a u64 data channel (UINT LE, 64-bit)
+    pub fn add_u64_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(0).bit_count(64).unit(unit))
+    }
+
+    /// Add an i8 data channel (INT LE, 8-bit)
+    pub fn add_i8_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(2).bit_count(8).unit(unit))
+    }
+
+    /// Add an i16 data channel (INT LE, 16-bit)
+    pub fn add_i16_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(2).bit_count(16).unit(unit))
+    }
+
+    /// Add an i32 data channel (INT LE, 32-bit)
+    pub fn add_i32_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(2).bit_count(32).unit(unit))
+    }
+
+    /// Add an i64 data channel (INT LE, 64-bit)
+    pub fn add_i64_channel(self, name: &str, unit: &str) -> Self {
+        self.channel(ChannelDef::new(name).data_type(2).bit_count(64).unit(unit))
+    }
+
     /// Build the channel group definition
     pub fn build(self) -> WriteResult<ChannelGroupDef> {
         if self.channels.is_empty() && self.master.is_none() {
@@ -619,61 +674,61 @@ pub trait RecordValue {
 }
 
 impl RecordValue for f64 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_f64_le(offset, *self);
     }
 }
 
 impl RecordValue for f32 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_f32_le(offset, *self);
     }
 }
 
 impl RecordValue for u8 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_u8(offset, *self);
     }
 }
 
 impl RecordValue for u16 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_u16_le(offset, *self);
     }
 }
 
 impl RecordValue for u32 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_u32_le(offset, *self);
     }
 }
 
 impl RecordValue for u64 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_u64_le(offset, *self);
     }
 }
 
 impl RecordValue for i8 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_u8(offset, *self as u8);
     }
 }
 
 impl RecordValue for i16 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_u16_le(offset, *self as u16);
     }
 }
 
 impl RecordValue for i32 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_u32_le(offset, *self as u32);
     }
 }
 
 impl RecordValue for i64 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
         record.write_u64_le(offset, *self as u64);
     }
 }
@@ -1565,6 +1620,49 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
         }
 
         Ok(())
+    }
+
+    /// Write a complete record with all channel values in one call
+    ///
+    /// Values must be in channel definition order: master (time) first, then
+    /// data channels in the order they were added. This is a shorthand for
+    /// the single-DG, single-CG case (dg_index=0, cg_index=0).
+    ///
+    /// # Example
+    /// ```ignore
+    /// // With channels: time, voltage, current
+    /// writer.write_record(&[0.001, 3.14, 1.5])?;
+    /// ```
+    pub fn write_record(&mut self, values: &[f64]) -> WriteResult<()> {
+        let dg = self.data_groups.get(0)
+            .ok_or(WriteError::ChannelNotFound { name: "No data groups".to_string() })?;
+        let cg = dg.channel_groups.get(0)
+            .ok_or(WriteError::ChannelNotFound { name: "No channel groups".to_string() })?;
+
+        let expected = cg.channels.len() + if cg.master.is_some() { 1 } else { 0 };
+        if values.len() != expected {
+            return Err(WriteError::InvalidChannelConfig(
+                format!("Expected {} values but got {} (channels: master={}, data={})",
+                    expected, values.len(),
+                    if cg.master.is_some() { 1 } else { 0 },
+                    cg.channels.len())
+            ));
+        }
+
+        // Collect channel names to avoid borrow conflicts
+        let mut channel_names: Vec<String> = Vec::with_capacity(expected);
+        if let Some(ref m) = cg.master {
+            channel_names.push(m.name.clone());
+        }
+        for ch in &cg.channels {
+            channel_names.push(ch.name.clone());
+        }
+
+        self.start_record(0, 0)?;
+        for (i, &val) in values.iter().enumerate() {
+            self.set_channel_value(&channel_names[i], val)?;
+        }
+        self.flush_record()
     }
 
     /// Flush the current data block to disk

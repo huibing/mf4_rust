@@ -2221,4 +2221,370 @@ mod tests {
         // Also test with a block size that IS an exact multiple (832 = 8 × 104)
         verify_record_alignment_for_size(12, 832, 150, "104b_832");
     }
+
+    // ========================================================================
+    // Ergonomic API Tests: Convenience Methods + SimpleWriter
+    // ========================================================================
+
+    /// Test: ChannelGroupDefBuilder convenience methods produce correct channel defs
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_convenience_add_f64_channel() {
+        use crate::writer::stream_writer::ChannelGroupDefBuilder;
+
+        let cg = ChannelGroupDefBuilder::new()
+            .name("test_group")
+            .with_time_channel("time")
+            .add_f64_channel("voltage", "V")
+            .add_f64_channel("current", "A")
+            .build()
+            .expect("build CG");
+
+        // Master channel: time (f64 = 8 bytes)
+        assert!(cg.master.is_some());
+        let master = cg.master.as_ref().unwrap();
+        assert_eq!(master.name, "time");
+        assert_eq!(master.data_type, 4); // FLOAT_LE
+        assert_eq!(master.bit_count, 64);
+        assert_eq!(master.cn_type, 2); // Master
+        assert_eq!(master.byte_offset, 0);
+
+        // Data channels
+        assert_eq!(cg.channels.len(), 2);
+        assert_eq!(cg.channels[0].name, "voltage");
+        assert_eq!(cg.channels[0].data_type, 4);
+        assert_eq!(cg.channels[0].bit_count, 64);
+        assert_eq!(cg.channels[0].byte_offset, 8); // after time
+        assert_eq!(cg.channels[0].unit, Some("V".to_string()));
+
+        assert_eq!(cg.channels[1].name, "current");
+        assert_eq!(cg.channels[1].byte_offset, 16); // after voltage
+        assert_eq!(cg.channels[1].unit, Some("A".to_string()));
+
+        // Record size = 3 × 8 = 24
+        assert_eq!(cg.record_size, 24);
+    }
+
+    /// Test: Mixed convenience methods (f32, u32, i16)
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_convenience_mixed_types() {
+        use crate::writer::stream_writer::ChannelGroupDefBuilder;
+
+        let cg = ChannelGroupDefBuilder::new()
+            .name("mixed")
+            .with_time_channel("time")
+            .add_f32_channel("temp", "°C")
+            .add_u32_channel("counter", "")
+            .add_i16_channel("offset", "mm")
+            .add_u8_channel("status", "")
+            .build()
+            .expect("build CG");
+
+        // time=8 + f32=4 + u32=4 + i16=2 + u8=1 = 19 bytes
+        assert_eq!(cg.record_size, 19);
+
+        assert_eq!(cg.channels[0].name, "temp");
+        assert_eq!(cg.channels[0].data_type, 4); // FLOAT_LE
+        assert_eq!(cg.channels[0].bit_count, 32);
+
+        assert_eq!(cg.channels[1].name, "counter");
+        assert_eq!(cg.channels[1].data_type, 0); // UINT_LE
+        assert_eq!(cg.channels[1].bit_count, 32);
+
+        assert_eq!(cg.channels[2].name, "offset");
+        assert_eq!(cg.channels[2].data_type, 2); // INT_LE
+        assert_eq!(cg.channels[2].bit_count, 16);
+
+        assert_eq!(cg.channels[3].name, "status");
+        assert_eq!(cg.channels[3].data_type, 0); // UINT_LE
+        assert_eq!(cg.channels[3].bit_count, 8);
+    }
+
+    /// Test: write_record shorthand on Mf4StreamWriter
+    #[cfg(all(feature = "streaming", feature = "compression"))]
+    #[test]
+    fn test_write_record_shorthand() {
+        use crate::writer::stream_writer::{ChannelGroupDefBuilder, Mf4StreamWriter,
+            StreamingDataGroup, StreamingConfig};
+        use crate::writer::Mf4Metadata;
+
+        let path = PathBuf::from("test_write_record_shorthand.mf4");
+        cleanup_test_file(&path);
+
+        let config = StreamingConfig::new().with_block_size(4_000_000);
+        let metadata = Mf4Metadata::new().with_author("test");
+
+        let mut writer = Mf4StreamWriter::with_config(path.clone(), metadata, config).unwrap();
+
+        let cg = ChannelGroupDefBuilder::new()
+            .name("data")
+            .with_time_channel("time")
+            .add_f64_channel("ch_0", "V")
+            .add_f64_channel("ch_1", "A")
+            .build()
+            .unwrap();
+        writer.add_data_group(StreamingDataGroup::new(cg).unwrap()).unwrap();
+        writer.finalize_structure().unwrap();
+
+        // Write 100 records using shorthand
+        for i in 0..100 {
+            let t = i as f64 * 0.01;
+            writer.write_record(&[t, t.sin(), t.cos()]).unwrap();
+        }
+
+        writer.finalize_with_compact(true).unwrap();
+
+        // Read back and verify
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        let ch0 = mf4.get_channel_data("ch_0");
+        assert!(ch0.is_some());
+        if let Some(crate::data_serde::DataValue::REAL(vals)) = ch0 {
+            assert_eq!(vals.len(), 100);
+            let expected = 0.0_f64.sin();
+            assert!((vals[0] - expected).abs() < 1e-10);
+        }
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: write_record validates value count
+    #[cfg(all(feature = "streaming", feature = "compression"))]
+    #[test]
+    fn test_write_record_wrong_count() {
+        use crate::writer::stream_writer::{ChannelGroupDefBuilder, Mf4StreamWriter,
+            StreamingDataGroup, StreamingConfig};
+        use crate::writer::Mf4Metadata;
+
+        let path = PathBuf::from("test_write_record_wrong_count.mf4");
+        cleanup_test_file(&path);
+
+        let config = StreamingConfig::new();
+        let metadata = Mf4Metadata::new().with_author("test");
+
+        let mut writer = Mf4StreamWriter::with_config(path.clone(), metadata, config).unwrap();
+        let cg = ChannelGroupDefBuilder::new()
+            .name("data")
+            .with_time_channel("time")
+            .add_f64_channel("ch_0", "V")
+            .build()
+            .unwrap();
+        writer.add_data_group(StreamingDataGroup::new(cg).unwrap()).unwrap();
+        writer.finalize_structure().unwrap();
+
+        // Should fail: 3 values but only 2 channels (time + ch_0)
+        let result = writer.write_record(&[0.0, 1.0, 2.0]);
+        assert!(result.is_err());
+
+        // Should fail: 1 value but 2 channels expected
+        let result = writer.write_record(&[0.0]);
+        assert!(result.is_err());
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: SimpleWriter basic creation and write
+    #[cfg(all(feature = "streaming", feature = "compression"))]
+    #[test]
+    fn test_simple_writer_basic() {
+        use crate::writer::simple_writer::SimpleWriter;
+
+        let path = PathBuf::from("test_simple_writer_basic.mf4");
+        cleanup_test_file(&path);
+
+        let mut writer = SimpleWriter::new(&path)
+            .author("Test Author")
+            .time_channel("time", "s")
+            .f64_channel("voltage", "V")
+            .f64_channel("current", "A")
+            .build()
+            .expect("build SimpleWriter");
+
+        // Write 50 records
+        for i in 0..50 {
+            let t = i as f64 * 0.001;
+            writer.write_record(&[t, t.sin(), t.cos()]).unwrap();
+        }
+
+        writer.finalize().unwrap();
+
+        // Read back and verify
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        let names = mf4.get_channel_names();
+        assert!(names.contains(&"voltage".to_string()));
+        assert!(names.contains(&"current".to_string()));
+
+        if let Some(crate::data_serde::DataValue::REAL(vals)) = mf4.get_channel_data("voltage") {
+            assert_eq!(vals.len(), 50);
+        } else {
+            panic!("voltage channel data not found or wrong type");
+        }
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: SimpleWriter with compression and stream mode
+    #[cfg(all(feature = "streaming", feature = "compression"))]
+    #[test]
+    fn test_simple_writer_compressed_stream() {
+        use crate::writer::simple_writer::SimpleWriter;
+
+        let path = PathBuf::from("test_simple_writer_compressed_stream.mf4");
+        cleanup_test_file(&path);
+
+        let mut writer = SimpleWriter::new(&path)
+            .author("Compressed Test")
+            .comment("Testing compressed stream mode")
+            .time_channel("time", "s")
+            .f64_channel("signal", "V")
+            .compression(6)
+            .stream_mode()
+            .block_size(1000) // small blocks to force DL chain
+            .compression_threshold(0)
+            .build()
+            .expect("build SimpleWriter");
+
+        for i in 0..200 {
+            let t = i as f64 * 0.001;
+            writer.write_record(&[t, t * 10.0]).unwrap();
+        }
+
+        assert_eq!(writer.records_written(), 200);
+        writer.finalize().unwrap();
+
+        // Read back and verify
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        if let Some(crate::data_serde::DataValue::REAL(vals)) = mf4.get_channel_data("signal") {
+            assert_eq!(vals.len(), 200);
+            // Verify first value
+            assert!((vals[0] - 0.0).abs() < 1e-10);
+            // Verify last value
+            let expected_last = 199.0 * 0.001 * 10.0;
+            assert!((vals[199] - expected_last).abs() < 1e-10);
+        } else {
+            panic!("signal channel not found");
+        }
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: SimpleWriter compact mode
+    #[cfg(all(feature = "streaming", feature = "compression"))]
+    #[test]
+    fn test_simple_writer_compact_mode() {
+        use crate::writer::simple_writer::SimpleWriter;
+
+        let path = PathBuf::from("test_simple_writer_compact.mf4");
+        cleanup_test_file(&path);
+
+        let mut writer = SimpleWriter::new(&path)
+            .time_channel("time", "s")
+            .f64_channel("value", "m")
+            .compact_mode()
+            .build()
+            .expect("build SimpleWriter");
+
+        for i in 0..100 {
+            writer.write_record(&[i as f64 * 0.01, i as f64]).unwrap();
+        }
+
+        writer.finalize().unwrap();
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        if let Some(crate::data_serde::DataValue::REAL(vals)) = mf4.get_channel_data("value") {
+            assert_eq!(vals.len(), 100);
+            assert!((vals[50] - 50.0).abs() < 1e-10);
+        } else {
+            panic!("value channel not found");
+        }
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: SimpleWriter roundtrip data integrity with many samples
+    #[cfg(all(feature = "streaming", feature = "compression"))]
+    #[test]
+    fn test_simple_writer_roundtrip_integrity() {
+        use crate::writer::simple_writer::SimpleWriter;
+
+        let path = PathBuf::from("test_simple_writer_integrity.mf4");
+        cleanup_test_file(&path);
+
+        let num_samples = 10_000;
+
+        let mut writer = SimpleWriter::new(&path)
+            .author("Integrity Test")
+            .group_name("Sensors")
+            .time_channel("timestamp", "s")
+            .f64_channel("sine", "V")
+            .f64_channel("cosine", "A")
+            .f64_channel("ramp", "")
+            .stream_mode()
+            .build()
+            .expect("build");
+
+        let mut expected_sine = Vec::with_capacity(num_samples);
+        let mut expected_ramp = Vec::with_capacity(num_samples);
+
+        for i in 0..num_samples {
+            let t = i as f64 * 0.0001;
+            let sine = t.sin();
+            let cosine = t.cos();
+            let ramp = i as f64;
+            writer.write_record(&[t, sine, cosine, ramp]).unwrap();
+            expected_sine.push(sine);
+            expected_ramp.push(ramp);
+        }
+
+        writer.finalize().unwrap();
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+
+        if let Some(crate::data_serde::DataValue::REAL(sine_vals)) = mf4.get_channel_data("sine") {
+            assert_eq!(sine_vals.len(), num_samples);
+            for i in 0..num_samples {
+                assert!((sine_vals[i] - expected_sine[i]).abs() < 1e-10,
+                    "sine mismatch at index {}: got {} expected {}", i, sine_vals[i], expected_sine[i]);
+            }
+        } else {
+            panic!("sine channel not found");
+        }
+
+        if let Some(crate::data_serde::DataValue::REAL(ramp_vals)) = mf4.get_channel_data("ramp") {
+            assert_eq!(ramp_vals.len(), num_samples);
+            for i in 0..num_samples {
+                assert!((ramp_vals[i] - expected_ramp[i]).abs() < 1e-10,
+                    "ramp mismatch at index {}", i);
+            }
+        } else {
+            panic!("ramp channel not found");
+        }
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: SimpleWriter write_record rejects wrong value count
+    #[cfg(all(feature = "streaming", feature = "compression"))]
+    #[test]
+    fn test_simple_writer_wrong_value_count() {
+        use crate::writer::simple_writer::SimpleWriter;
+
+        let path = PathBuf::from("test_simple_writer_wrong_count.mf4");
+        cleanup_test_file(&path);
+
+        let mut writer = SimpleWriter::new(&path)
+            .time_channel("time", "s")
+            .f64_channel("ch_0", "V")
+            .build()
+            .expect("build");
+
+        // 2 channels but 3 values — should error
+        assert!(writer.write_record(&[0.0, 1.0, 2.0]).is_err());
+        // 2 channels but 1 value — should error
+        assert!(writer.write_record(&[0.0]).is_err());
+        // Correct count
+        assert!(writer.write_record(&[0.0, 1.0]).is_ok());
+
+        cleanup_test_file(&path);
+    }
 }

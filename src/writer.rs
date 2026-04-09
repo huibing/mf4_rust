@@ -10,6 +10,9 @@ pub mod builder;
 #[cfg(feature = "streaming")]
 pub mod stream_writer;
 
+#[cfg(feature = "streaming")]
+pub mod simple_writer;
+
 #[cfg(feature = "write")]
 pub mod block_writer;
 
@@ -28,6 +31,9 @@ pub use builder::{Mf4Builder, Mf4Metadata, CompressionConfig, DataGroupBuilder, 
 
 #[cfg(feature = "streaming")]
 pub use stream_writer::{Mf4StreamWriter, StreamingDataGroup, ChannelGroupDef, ChannelDef, WriterState, StreamingConfig};
+
+#[cfg(feature = "streaming")]
+pub use simple_writer::SimpleWriter;
 
 #[cfg(feature = "write")]
 pub use error::WriteError;
