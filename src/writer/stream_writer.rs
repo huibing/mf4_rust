@@ -718,8 +718,21 @@ impl DataBlockChain {
             && data_len >= self.config.compression_threshold;
 
         let offset = if should_compress {
-            // TODO: Write compressed DZ block
-            writer.write_dt_block(&super::block_writer::DtBlock::new(data))?
+            // Compress and write DZ block
+            let compressor = super::compression::Compressor {
+                compression_type: super::compression::CompressionType::Deflate,
+                level: self.config.compression_level,
+                column_count: None,
+            };
+            let (compressed_data, original_len) = compressor.compress(&data)?;
+            let dz = super::block_writer::DzBlock {
+                dz_org_data_length: original_len,
+                dz_data_length: compressed_data.len() as u64,
+                dz_zip_type: 0, // Deflate
+                dz_zip_parameter: 0,
+                data: compressed_data,
+            };
+            writer.write_dz_block(&dz)?
         } else {
             writer.write_dt_block(&super::block_writer::DtBlock::new(data))?
         };
@@ -748,20 +761,43 @@ impl DataBlockChain {
     }
 
     /// Compact all blocks into a single block
-    /// Returns the new DT block offset
+    /// Returns the new DT/DZ block offset
     pub fn compact<W: Write + Seek>(&mut self, writer: &mut BlockWriter<W>, all_data: Vec<u8>) -> WriteResult<u64> {
-        // Write a single DT block with all data
-        let dt_offset = writer.write_dt_block(&super::block_writer::DtBlock::new(all_data))?;
+        let data_len = all_data.len() as u64;
+
+        // Decide whether to compress
+        let should_compress = self.config.enable_compression
+            && data_len >= self.config.compression_threshold;
+
+        let offset = if should_compress {
+            // Compress and write DZ block
+            let compressor = super::compression::Compressor {
+                compression_type: super::compression::CompressionType::Deflate,
+                level: self.config.compression_level,
+                column_count: None,
+            };
+            let (compressed_data, original_len) = compressor.compress(&all_data)?;
+            let dz = super::block_writer::DzBlock {
+                dz_org_data_length: original_len,
+                dz_data_length: compressed_data.len() as u64,
+                dz_zip_type: 0, // Deflate
+                dz_zip_parameter: 0,
+                data: compressed_data,
+            };
+            writer.write_dz_block(&dz)?
+        } else {
+            writer.write_dt_block(&super::block_writer::DtBlock::new(all_data))?
+        };
 
         // Reset chain with single block
         self.blocks = vec![DataBlockInfo {
-            offset: dt_offset,
+            offset,
             size: 0,
-            compressed: false,
+            compressed: should_compress,
         }];
         self.dl_block_offset = None; // No DL needed for single block
 
-        Ok(dt_offset)
+        Ok(offset)
     }
 }
 
@@ -1374,18 +1410,40 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
             };
 
             let cycle_count = dg.cycle_counts.iter().sum();
+            let data_len = data.len() as u64;
+
+            // Check if compression should be used
+            let should_compress = self.config.enable_compression
+                && data_len >= self.config.compression_threshold;
 
             if compact {
-                // Write single DT block
-                let dt_offset = block_writer.write_dt_block(&super::block_writer::DtBlock::new(data))?;
+                // Write single block (DT or DZ depending on compression)
+                let block_offset = if should_compress {
+                    let compressor = super::compression::Compressor {
+                        compression_type: super::compression::CompressionType::Deflate,
+                        level: self.config.compression_level,
+                        column_count: None,
+                    };
+                    let (compressed_data, original_len) = compressor.compress(&data)?;
+                    let dz = super::block_writer::DzBlock {
+                        dz_org_data_length: original_len,
+                        dz_data_length: compressed_data.len() as u64,
+                        dz_zip_type: 0,
+                        dz_zip_parameter: 0,
+                        data: compressed_data,
+                    };
+                    block_writer.write_dz_block(&dz)?
+                } else {
+                    block_writer.write_dt_block(&super::block_writer::DtBlock::new(data))?
+                };
 
                 // Update DG data link
                 if let Some(dg_off) = dg.dg_offset {
                     let dg_data_offset = dg_off + 24 + 16; // After header + dg_dg_next + dg_cg_first
-                    block_writer.update_link(dg_data_offset, dt_offset)?;
+                    block_writer.update_link(dg_data_offset, block_offset)?;
                 }
             } else {
-                // Write DT block
+                // Write DT block (non-compact mode)
                 let dt_offset = block_writer.write_dt_block(&super::block_writer::DtBlock::new(data))?;
 
                 // For single block, no DL needed

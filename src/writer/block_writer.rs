@@ -804,19 +804,19 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
     pub fn write_dz_block(&mut self, dz: &DzBlock) -> WriteResult<u64> {
         let offset = self.align_to_8()?;
 
-        // DZ block structure:
-        // - Block ID: "##DZ" (4 bytes)
-        // - Reserved: 4 bytes
-        // - Block length: 8 bytes
-        // - Link count: 1 (dz_data)
-        // - dz_org_data_length: 8 bytes (original uncompressed size)
-        // - dz_data_length: 8 bytes (compressed size)
-        // - dz_zip_type: 1 byte (0=Deflate, 1=Transpose+Deflate)
-        // - dz_zip_parameter: 4 bytes (column count for transpose)
-        // - dz_data: compressed data (link count = 1, so link is here)
-        // Total header: 24 + 8 + 8 + 1 + 3 + 4 = 48 bytes, plus data
+        // DZ block structure per MDF spec:
+        // Header: 24 bytes (id + reserved + length + link_count)
+        // Link: 8 bytes (dz_data)
+        // Data fields:
+        //   dz_org_block_type: 2 bytes (CHAR) - "DT" for data block
+        //   dz_zip_type: 1 byte (UINT8) - 0=Deflate, 1=Transpose+Deflate
+        //   dz_reserved: 1 byte (BYTE)
+        //   dz_zip_parameter: 4 bytes (UINT32) - column count for transpose
+        //   dz_org_data_length: 8 bytes (UINT64) - original uncompressed size
+        //   dz_data_length: 8 bytes (UINT64) - compressed size
+        // Total header: 24 + 8 + 2 + 1 + 1 + 4 + 8 + 8 = 56 bytes, plus data
 
-        let block_len = 24 + 8 + 8 + 1 + 3 + 4 + dz.data.len() as u64;
+        let block_len = 24u64 + 8 + 2 + 1 + 1 + 4 + 8 + 8 + dz.data.len() as u64;
 
         // Block ID
         self.writer.write_all(block_id::DZ)?;
@@ -828,17 +828,22 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
         self.writer.write_all(&1u64.to_le_bytes())?;
 
         // dz_data link (points to the data after this header)
-        // The data starts right after the header, so this link points to offset + header_size
-        let data_offset = offset + 24 + 8 + 8 + 1 + 3 + 4 + 8; // header + dz_org_data_length + dz_data_length + zip_type + reserved + zip_param + link
+        let data_offset = offset + 24 + 8 + 2 + 1 + 1 + 4 + 8 + 8;
         self.writer.write_all(&data_offset.to_le_bytes())?;
 
-        // Data fields
-        self.writer.write_all(&dz.dz_org_data_length.to_le_bytes())?;
-        self.writer.write_all(&dz.dz_data_length.to_le_bytes())?;
+        // Data fields (in MDF spec order)
+        // dz_org_block_type: 2 bytes CHAR - "DT" indicates compressed DT block
+        self.writer.write_all(b"DT")?;
+        // dz_zip_type: 1 byte UINT8
         self.writer.write_all(&dz.dz_zip_type.to_le_bytes())?;
-        // Reserved (3 bytes)
-        self.writer.write_all(&[0u8; 3])?;
+        // dz_reserved: 1 byte
+        self.writer.write_all(&[0u8; 1])?;
+        // dz_zip_parameter: 4 bytes UINT32
         self.writer.write_all(&dz.dz_zip_parameter.to_le_bytes())?;
+        // dz_org_data_length: 8 bytes UINT64
+        self.writer.write_all(&dz.dz_org_data_length.to_le_bytes())?;
+        // dz_data_length: 8 bytes UINT64
+        self.writer.write_all(&dz.dz_data_length.to_le_bytes())?;
 
         // Compressed data
         self.writer.write_all(&dz.data)?;

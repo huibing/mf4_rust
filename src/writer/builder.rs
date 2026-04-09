@@ -1910,8 +1910,18 @@ impl Mf4Builder {
 
         let (compressed_data, original_len) = compressor.compress(data)?;
 
-        // DZ block structure
-        let block_len = 24u64 + 8 + 8 + 1 + 3 + 4 + compressed_data.len() as u64;
+        // DZ block structure per MDF spec:
+        // Header: 24 bytes (id + reserved + length + link_count)
+        // Link: 8 bytes (dz_data)
+        // Data fields:
+        //   dz_org_block_type: 2 bytes (CHAR) - "DT" for data block
+        //   dz_zip_type: 1 byte (UINT8) - 0=Deflate, 1=Transpose+Deflate
+        //   dz_reserved: 1 byte (BYTE)
+        //   dz_zip_parameter: 4 bytes (UINT32) - column count for transpose
+        //   dz_org_data_length: 8 bytes (UINT64)
+        //   dz_data_length: 8 bytes (UINT64)
+        // Total header: 24 + 8 + 2 + 1 + 1 + 4 + 8 + 8 = 56 bytes
+        let block_len = 24u64 + 8 + 2 + 1 + 1 + 4 + 8 + 8 + compressed_data.len() as u64;
 
         writer.write_all(b"##DZ")?;
         writer.write_all(&[0u8; 4])?;
@@ -1920,15 +1930,16 @@ impl Mf4Builder {
 
         // Data offset (position after this header + the link itself)
         let current_pos = writer.stream_position()?;
-        let data_offset = current_pos + 8 + 8 + 1 + 3 + 4; // remaining header bytes
+        let data_offset = current_pos + 2 + 1 + 1 + 4 + 8 + 8; // remaining data fields
         writer.write_all(&data_offset.to_le_bytes())?;
 
-        // DZ data fields
-        writer.write_all(&original_len.to_le_bytes())?;  // dz_org_data_length
-        writer.write_all(&(compressed_data.len() as u64).to_le_bytes())?;  // dz_data_length
-        writer.write_all(&compression_config.zip_type.to_le_bytes())?;  // dz_zip_type
-        writer.write_all(&[0u8; 3])?;  // reserved
-        writer.write_all(&0u32.to_le_bytes())?;  // dz_zip_parameter
+        // DZ data fields (in MDF spec order)
+        writer.write_all(b"DT")?;  // dz_org_block_type (2 bytes CHAR) - indicates DT block was compressed
+        writer.write_all(&[compression_config.zip_type])?;  // dz_zip_type (1 byte)
+        writer.write_all(&[0u8; 1])?;  // dz_reserved (1 byte)
+        writer.write_all(&0u32.to_le_bytes())?;  // dz_zip_parameter (4 bytes) - column count for transpose
+        writer.write_all(&original_len.to_le_bytes())?;  // dz_org_data_length (8 bytes)
+        writer.write_all(&(compressed_data.len() as u64).to_le_bytes())?;  // dz_data_length (8 bytes)
 
         // Compressed data
         writer.write_all(&compressed_data)?;
