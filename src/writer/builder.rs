@@ -1649,7 +1649,17 @@ impl Mf4Builder {
                 // Write DZ block (compressed) - only available with compression feature
                 #[cfg(feature = "compression")]
                 {
-                    self.write_dz_block_raw(&mut writer, &all_data)?;
+                    let top_offset = self.write_dz_block_raw(&mut writer, &all_data)?;
+                    // If the data was split into a DZ chain (data > 4MB), the returned
+                    // top_offset points to the HL block rather than to the first DZ at
+                    // data_offsets[dg_idx]. Update the DG's dg_data link accordingly.
+                    if top_offset != data_offsets[dg_idx] {
+                        // dg_data is the 3rd link in the DG block:
+                        //   24 (header) + 8 (dg_dg_next) + 8 (dg_cg_first) = offset 40
+                        writer.seek(SeekFrom::Start(dg_offsets[dg_idx] + 40))?;
+                        writer.write_all(&top_offset.to_le_bytes())?;
+                        writer.seek(SeekFrom::End(0))?;
+                    }
                 }
                 #[cfg(not(feature = "compression"))]
                 {
@@ -1894,11 +1904,23 @@ impl Mf4Builder {
         Ok(())
     }
 
+    /// Write compressed data for a DG block, enforcing the MDF4 4MB DZ-block limit.
+    ///
+    /// Returns the file offset of the **top-level** block that `dg_data` must link to:
+    /// - Single DZ: the DZ block offset (≡ `writer` position before the call).
+    /// - Chain (data > 4MB): the HL block offset that heads the HL→DL→[DZ…] chain.
+    ///
+    /// The MDF4 protocol forbids a single DZ block with `dz_org_data_length > 4MB`.
+    /// This limit is a hard protocol constraint and is enforced internally; it is not
+    /// user-configurable.
     #[cfg(feature = "compression")]
-    fn write_dz_block_raw<W: Write + Seek>(&self, writer: &mut W, data: &[u8]) -> WriteResult<()> {
-        // Compress the data
+    fn write_dz_block_raw<W: Write + Seek>(&self, writer: &mut W, data: &[u8]) -> WriteResult<u64> {
+        use super::stream_writer::MAX_DZ_UNCOMPRESSED_SIZE;
+
         let compression_config = self.compression.as_ref().unwrap();
-        let compressor = super::compression::Compressor {
+        let max_chunk = MAX_DZ_UNCOMPRESSED_SIZE as usize;
+
+        let make_compressor = || super::compression::Compressor {
             compression_type: if compression_config.zip_type == 0 {
                 super::compression::CompressionType::Deflate
             } else {
@@ -1908,43 +1930,72 @@ impl Mf4Builder {
             column_count: None,
         };
 
-        let (compressed_data, original_len) = compressor.compress(data)?;
+        if data.len() <= max_chunk {
+            // Single DZ block — record the start position to return as the top-level offset.
+            let start_pos = writer.stream_position()?;
 
-        // DZ block structure per MDF spec:
-        // Header: 24 bytes (id + reserved + length + link_count)
-        // Link: 8 bytes (dz_data)
-        // Data fields:
-        //   dz_org_block_type: 2 bytes (CHAR) - "DT" for data block
-        //   dz_zip_type: 1 byte (UINT8) - 0=Deflate, 1=Transpose+Deflate
-        //   dz_reserved: 1 byte (BYTE)
-        //   dz_zip_parameter: 4 bytes (UINT32) - column count for transpose
-        //   dz_org_data_length: 8 bytes (UINT64)
-        //   dz_data_length: 8 bytes (UINT64)
-        // Total header: 24 + 8 + 2 + 1 + 1 + 4 + 8 + 8 = 56 bytes
-        let block_len = 24u64 + 8 + 2 + 1 + 1 + 4 + 8 + 8 + compressed_data.len() as u64;
+            let (compressed_data, original_len) = make_compressor().compress(data)?;
 
-        writer.write_all(b"##DZ")?;
-        writer.write_all(&[0u8; 4])?;
-        writer.write_all(&block_len.to_le_bytes())?;
-        writer.write_all(&1u64.to_le_bytes())?;  // Link count (dz_data)
+            // DZ block layout per MDF4 spec:
+            // Header: 24 bytes (id + reserved + length + link_count)
+            // Link:    8 bytes (dz_data — points to compressed payload)
+            // Data fields: dz_org_block_type(2) + dz_zip_type(1) + dz_reserved(1) +
+            //              dz_zip_parameter(4) + dz_org_data_length(8) + dz_data_length(8)
+            let block_len = 24u64 + 8 + 2 + 1 + 1 + 4 + 8 + 8 + compressed_data.len() as u64;
+            writer.write_all(b"##DZ")?;
+            writer.write_all(&[0u8; 4])?;
+            writer.write_all(&block_len.to_le_bytes())?;
+            writer.write_all(&1u64.to_le_bytes())?;  // link_count = 1 (dz_data)
 
-        // Data offset (position after this header + the link itself)
-        let current_pos = writer.stream_position()?;
-        let data_offset = current_pos + 2 + 1 + 1 + 4 + 8 + 8; // remaining data fields
-        writer.write_all(&data_offset.to_le_bytes())?;
+            let current_pos = writer.stream_position()?;
+            let data_offset = current_pos + 2 + 1 + 1 + 4 + 8 + 8;
+            writer.write_all(&data_offset.to_le_bytes())?;
 
-        // DZ data fields (in MDF spec order)
-        writer.write_all(b"DT")?;  // dz_org_block_type (2 bytes CHAR) - indicates DT block was compressed
-        writer.write_all(&[compression_config.zip_type])?;  // dz_zip_type (1 byte)
-        writer.write_all(&[0u8; 1])?;  // dz_reserved (1 byte)
-        writer.write_all(&0u32.to_le_bytes())?;  // dz_zip_parameter (4 bytes) - column count for transpose
-        writer.write_all(&original_len.to_le_bytes())?;  // dz_org_data_length (8 bytes)
-        writer.write_all(&(compressed_data.len() as u64).to_le_bytes())?;  // dz_data_length (8 bytes)
+            writer.write_all(b"DT")?;
+            writer.write_all(&[compression_config.zip_type])?;
+            writer.write_all(&[0u8; 1])?;
+            writer.write_all(&0u32.to_le_bytes())?;
+            writer.write_all(&original_len.to_le_bytes())?;
+            writer.write_all(&(compressed_data.len() as u64).to_le_bytes())?;
+            writer.write_all(&compressed_data)?;
 
-        // Compressed data
-        writer.write_all(&compressed_data)?;
+            Ok(start_pos)
+        } else {
+            // Data exceeds 4MB: split into chunks and write a DL-chained series of DZ blocks
+            // followed by a DL block and an HL header, returning the HL offset as the
+            // top-level block for dg_data.
+            let mut block_writer = super::block_writer::BlockWriter::new(writer)?;
 
-        Ok(())
+            let mut dz_offsets: Vec<u64> = Vec::new();
+            let mut cumul_data_offsets: Vec<u64> = Vec::new();
+            let mut cumulative: u64 = 0;
+
+            for chunk in data.chunks(max_chunk) {
+                let (compressed_data, original_len) = make_compressor().compress(chunk)?;
+                let dz = super::block_writer::DzBlock {
+                    dz_org_data_length: original_len,
+                    dz_data_length: compressed_data.len() as u64,
+                    dz_zip_type: compression_config.zip_type,
+                    dz_zip_parameter: 0,
+                    data: compressed_data,
+                };
+                let off = block_writer.write_dz_block(&dz)?;
+                cumul_data_offsets.push(cumulative);
+                cumulative += chunk.len() as u64;
+                dz_offsets.push(off);
+            }
+
+            let dl_offset = block_writer.write_dl_block(&dz_offsets, &cumul_data_offsets)?;
+
+            let hl = super::block_writer::HlBlock {
+                hl_dl_first: dl_offset,
+                hl_flags: 0,
+                hl_zip_type: compression_config.zip_type,
+            };
+            let hl_offset = block_writer.write_hl_block(&hl)?;
+
+            Ok(hl_offset)
+        }
     }
 
     fn write_si_block_raw<W: Write + Seek>(&self, writer: &mut W, si_tx_name: u64, si_tx_path: u64, si_md_comment: u64, si_type: u8, si_bus_type: u8, si_flags: u8) -> WriteResult<()> {

@@ -1210,6 +1210,109 @@ mod tests {
         cleanup_test_file(&output_path);
     }
 
+    /// Test: Builder correctly chunks large data into a DZ chain when data exceeds 4MB.
+    ///
+    /// The MDF4 protocol forbids a single DZ block with `dz_org_data_length > 4MB`.
+    /// When `Mf4Builder` writes compressed data that exceeds this limit it must
+    /// split it into multiple DZ blocks, wrap them in a DL block, and top the chain
+    /// with an HL block — and then update `dg_data` in the DG block to point to HL.
+    #[cfg(feature = "compression")]
+    #[test]
+    fn test_builder_large_compressed_data_dz_chain() {
+        use crate::writer::builder::CompressionConfig;
+
+        let output_path = PathBuf::from("temp_builder_large_dz_chain.mf4");
+        cleanup_test_file(&output_path);
+
+        // 2 × f64 = 16 bytes / record.  300 000 records = 4 800 000 bytes > 4 MB.
+        const NUM_RECORDS: usize = 300_000;
+        let time_data: Vec<f64>   = (0..NUM_RECORDS).map(|i| i as f64 * 0.001).collect();
+        let signal_data: Vec<f64> = (0..NUM_RECORDS).map(|i| (i as f64 * 0.01).sin()).collect();
+
+        let metadata = Mf4Metadata {
+            version: "4.10".to_string(),
+            version_num: 410,
+            start_time_ns: 0,
+            author: None,
+            organization: None,
+            project: None,
+            comment: None,
+        };
+
+        let mut builder = Mf4Builder::new(metadata);
+
+        let cg = ChannelGroupBuilder::new()
+            .name("Data")
+            .master(ChannelBuilder::new_master_time("time"))
+            .channel(ChannelBuilder::new("Signal").data_type(4).unit("V").build().unwrap())
+            .build().unwrap();
+        builder.add_data_group(DataGroupBuilder::new().channel_group(cg).build().unwrap());
+
+        builder.set_channel_data("time",   &time_data).unwrap();
+        builder.set_channel_data("Signal", &signal_data).unwrap();
+
+        // Compress everything (min_size = 0 means always compress)
+        builder.set_compression(CompressionConfig::new().with_min_size(0));
+
+        builder.write(output_path.clone()).expect("builder write");
+
+        // ─── Verify file structure: DG.dg_data → HL → DL → [DZ₁, DZ₂, …] ────
+        let dg_offset     = read_u64_at(&output_path, 88); // HD.hd_dg_first
+        let dg_data_field = dg_offset + 24 + 16;           // 24-byte header + 8 dg_next + 8 cg_first
+        let dg_data       = read_u64_at(&output_path, dg_data_field);
+
+        let top_id = read_block_id(&output_path, dg_data);
+        assert_eq!(top_id, "##HL", "DG.dg_data must point to ##HL for large compressed data");
+
+        // HL → DL
+        let dl_offset = read_u64_at(&output_path, dg_data + 24); // first link in HL
+        let dl_id     = read_block_id(&output_path, dl_offset);
+        assert_eq!(dl_id, "##DL");
+
+        // DL link_count and iterate over data links
+        let dl_link_count   = read_u64_at(&output_path, dl_offset + 16) as usize;
+        let num_data_blocks = dl_link_count - 1; // subtract dl_dl_next
+        assert!(num_data_blocks >= 2, "Should have at least 2 DZ blocks for > 4MB data");
+
+        let max_dz: u64 = 4 * 1024 * 1024;
+
+        for i in 0..num_data_blocks {
+            let dz_offset = read_u64_at(&output_path, dl_offset + 24 + 8 * (i as u64 + 1));
+            assert!(dz_offset > 0);
+
+            let dz_id = read_block_id(&output_path, dz_offset);
+            assert_eq!(dz_id, "##DZ", "Block {} must be ##DZ", i);
+
+            // DZ blocks written via block_writer have 0 links, so data fields start at 24:
+            //   2 (org_block_type) + 1 (zip_type) + 1 (reserved) + 4 (zip_param) = 8
+            //   → dz_org_data_length at offset 24 + 8 = 32
+            let orig_len = read_u64_at(&output_path, dz_offset + 32);
+            assert!(
+                orig_len <= max_dz,
+                "DZ block {} has orig_len {} which exceeds the 4MB MDF4 limit",
+                i, orig_len
+            );
+        }
+
+        // ─── Round-trip integrity check ───────────────────────────────────────
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
+        if let Some(crate::DataValue::REAL(vals)) = mf4.get_channel_data("Signal") {
+            assert_eq!(vals.len(), NUM_RECORDS, "Round-trip sample count mismatch");
+            // Spot-check first and last sample
+            assert!((vals[0] - 0.0_f64.sin()).abs() < 1e-10);
+            let expected_last = ((NUM_RECORDS - 1) as f64 * 0.01).sin();
+            assert!(
+                (vals[NUM_RECORDS - 1] - expected_last).abs() < 1e-10,
+                "Last sample mismatch: expected {}, got {}",
+                expected_last, vals[NUM_RECORDS - 1]
+            );
+        } else {
+            panic!("Expected REAL data for Signal channel");
+        }
+
+        cleanup_test_file(&output_path);
+    }
+
     /// Test: Streaming write and read back
     #[cfg(feature = "streaming")]
     #[test]
@@ -1647,8 +1750,10 @@ mod tests {
         // Each record = 16 bytes (2 × f64).
         // 4MB = 4,194,304 bytes → 262,144 records to fill one DZ block.
         // Write 400,000 records (~6.1 MB) so we need at least 2 DZ blocks.
+        // The library always uses 4MB as the DZ block size (protocol requirement),
+        // regardless of `block_size` (which only affects uncompressed DT blocks).
         let config = StreamingConfig::new()
-            .with_block_size(8_000_000) // 8MB block_size, but DZ should clamp to 4MB
+            .with_block_size(8_000_000) // block_size only affects DT blocks; DZ always uses 4MB
             .with_compression()
             .with_compression_threshold(0);
 
@@ -1716,8 +1821,11 @@ mod tests {
 
         // Use a record size that doesn't divide evenly into typical block sizes.
         // 3 channels × f64 = 24 bytes per record.
+        // DZ block sizes are always 4MB (protocol requirement), so with 100 records
+        // (2400 bytes total, well under 4MB) the result is a single DZ block.
+        // Record-alignment still applies: every chunk must be a multiple of 24 bytes.
         let config = StreamingConfig::new()
-            .with_block_size(500) // 500 / 24 = 20.83... not evenly divisible
+            .with_block_size(500) // only affects DT; DZ always uses 4MB internally
             .with_compression()
             .with_compression_threshold(0);
 
@@ -2437,7 +2545,6 @@ mod tests {
             .f64_channel("signal", "V")
             .compression(6)
             .stream_mode()
-            .block_size(1000) // small blocks to force DL chain
             .compression_threshold(0)
             .build()
             .expect("build SimpleWriter");

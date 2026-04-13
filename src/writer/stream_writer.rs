@@ -29,7 +29,9 @@ use super::builder::{Mf4Metadata, SourceInfoBuilder};
 /// Configuration for streaming write
 #[derive(Debug, Clone)]
 pub struct StreamingConfig {
-    /// Size of each data block in bytes (default: 1MB)
+    /// Size of uncompressed DT data blocks in bytes (default: 1MB).
+    /// This setting has no effect on DZ (compressed) blocks, whose size is fixed
+    /// at the 4MB MDF4 protocol maximum and managed internally by the library.
     pub block_size: u64,
     /// Enable compression for data blocks
     pub enable_compression: bool,
@@ -56,7 +58,11 @@ impl StreamingConfig {
         Self::default()
     }
 
-    /// Set the block size
+    /// Set the block size for uncompressed DT data blocks.
+    ///
+    /// This setting does **not** affect DZ (compressed) block sizes. DZ block
+    /// sizes are fixed at the MDF4 protocol maximum of 4MB and are managed
+    /// internally by the library.
     pub fn with_block_size(mut self, size: u64) -> Self {
         self.block_size = size;
         self
@@ -737,9 +743,10 @@ impl RecordValue for i64 {
 // Data Block Chain (Chained DT/DZ blocks via DL)
 // ============================================================================
 
-/// Maximum uncompressed size for a single DZ block (4 MB).
-/// Per MDF4 specification, individual DZ blocks in a DL chain should not
-/// exceed this limit to keep decompression memory bounded.
+/// Maximum original (uncompressed) length for a single DZ block: 4 MiB.
+///
+/// This is a **mandatory ASAM MDF4 protocol requirement**, not a user-configurable option.
+/// The library enforces this limit internally on every DZ block it writes.
 pub const MAX_DZ_UNCOMPRESSED_SIZE: u64 = 4 * 1024 * 1024;
 
 /// Represents a single data block in the chain
@@ -812,12 +819,18 @@ impl DataBlockChain {
         self.record_size = record_size;
     }
 
-    /// Get the effective maximum uncompressed block size.
-    /// For compressed mode: min(block_size, 4MB), aligned to record boundaries.
-    /// For uncompressed mode: block_size, aligned to record boundaries.
+    /// Returns the effective data chunk size for deciding when to flush a block.
+    ///
+    /// - **Compressed (DZ):** always `MAX_DZ_UNCOMPRESSED_SIZE` (4MB). The MDF4 protocol
+    ///   forbids DZ blocks with an original length > 4MB. This is a hard internal limit,
+    ///   not user-configurable.
+    /// - **Uncompressed (DT):** the user-configured `block_size`.
+    ///
+    /// Both values are aligned down to the nearest record boundary when `record_size > 0`.
     fn effective_block_size(&self) -> u64 {
+        // DZ blocks are bounded by the MDF4 protocol (4MB max). DT blocks use block_size.
         let base = if self.config.enable_compression {
-            self.config.block_size.min(MAX_DZ_UNCOMPRESSED_SIZE)
+            MAX_DZ_UNCOMPRESSED_SIZE
         } else {
             self.config.block_size
         };
@@ -1063,8 +1076,9 @@ impl DataBlockChain {
         Ok(dl_offset)
     }
 
-    /// Compact all blocks into a single block
-    /// Returns the new DT/DZ block offset
+    /// Compact all blocks into a single block (or a DL-chained series of DZ blocks
+    /// when data exceeds 4MB and compression is enabled).
+    /// Returns the top-level block offset.
     pub fn compact<W: Write + Seek>(&mut self, writer: &mut BlockWriter<W>, all_data: Vec<u8>) -> WriteResult<u64> {
         let data_len = all_data.len() as u64;
 
@@ -1073,20 +1087,26 @@ impl DataBlockChain {
             && data_len >= self.config.compression_threshold;
 
         let offset = if should_compress {
-            let compressor = super::compression::Compressor {
-                compression_type: super::compression::CompressionType::Deflate,
-                level: self.config.compression_level,
-                column_count: None,
-            };
-            let (compressed_data, original_len) = compressor.compress(&all_data)?;
-            let dz = super::block_writer::DzBlock {
-                dz_org_data_length: original_len,
-                dz_data_length: compressed_data.len() as u64,
-                dz_zip_type: 0, // Deflate
-                dz_zip_parameter: 0,
-                data: compressed_data,
-            };
-            writer.write_dz_block(&dz)?
+            if data_len > MAX_DZ_UNCOMPRESSED_SIZE {
+                // MDF4 forbids DZ blocks with original_length > 4MB.
+                // Fall back to a DL-chained series of DZ blocks.
+                self.write_chunked_chain(writer, all_data)?
+            } else {
+                let compressor = super::compression::Compressor {
+                    compression_type: super::compression::CompressionType::Deflate,
+                    level: self.config.compression_level,
+                    column_count: None,
+                };
+                let (compressed_data, original_len) = compressor.compress(&all_data)?;
+                let dz = super::block_writer::DzBlock {
+                    dz_org_data_length: original_len,
+                    dz_data_length: compressed_data.len() as u64,
+                    dz_zip_type: 0, // Deflate
+                    dz_zip_parameter: 0,
+                    data: compressed_data,
+                };
+                writer.write_dz_block(&dz)?
+            }
         } else {
             writer.write_dt_block(&super::block_writer::DtBlock::new(all_data))?
         };
@@ -1754,20 +1774,26 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
                     && data_len >= self.config.compression_threshold;
 
                 let block_offset = if should_compress {
-                    let compressor = super::compression::Compressor {
-                        compression_type: super::compression::CompressionType::Deflate,
-                        level: self.config.compression_level,
-                        column_count: None,
-                    };
-                    let (compressed_data, original_len) = compressor.compress(&data)?;
-                    let dz = super::block_writer::DzBlock {
-                        dz_org_data_length: original_len,
-                        dz_data_length: compressed_data.len() as u64,
-                        dz_zip_type: 0,
-                        dz_zip_parameter: 0,
-                        data: compressed_data,
-                    };
-                    block_writer.write_dz_block(&dz)?
+                    if data_len > MAX_DZ_UNCOMPRESSED_SIZE {
+                        // MDF4 forbids a single DZ block with original_length > 4MB.
+                        // Write a DL-chained series of DZ blocks instead.
+                        dg.data_chain.write_chunked_chain(&mut block_writer, data)?
+                    } else {
+                        let compressor = super::compression::Compressor {
+                            compression_type: super::compression::CompressionType::Deflate,
+                            level: self.config.compression_level,
+                            column_count: None,
+                        };
+                        let (compressed_data, original_len) = compressor.compress(&data)?;
+                        let dz = super::block_writer::DzBlock {
+                            dz_org_data_length: original_len,
+                            dz_data_length: compressed_data.len() as u64,
+                            dz_zip_type: 0,
+                            dz_zip_parameter: 0,
+                            data: compressed_data,
+                        };
+                        block_writer.write_dz_block(&dz)?
+                    }
                 } else {
                     block_writer.write_dt_block(&super::block_writer::DtBlock::new(data))?
                 };

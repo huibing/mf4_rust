@@ -59,7 +59,6 @@ pub struct SimpleWriterBuilder {
     channels: Vec<SimpleChannel>,
     compression_level: u8,
     compression_threshold: u64,
-    block_size: u64,
     compact: bool,
 }
 
@@ -75,7 +74,6 @@ impl SimpleWriterBuilder {
             channels: Vec::new(),
             compression_level: 0,
             compression_threshold: 100_000,
-            block_size: 4_000_000,
             compact: false,
         }
     }
@@ -233,12 +231,6 @@ impl SimpleWriterBuilder {
         self
     }
 
-    /// Set the block size in bytes (default 4MB)
-    pub fn block_size(mut self, size: u64) -> Self {
-        self.block_size = size;
-        self
-    }
-
     /// Use stream mode: data split into DL-chained blocks (default)
     pub fn stream_mode(mut self) -> Self {
         self.compact = false;
@@ -259,9 +251,10 @@ impl SimpleWriterBuilder {
             ));
         }
 
-        // Build StreamingConfig
+        // Build StreamingConfig — block_size only affects DT (uncompressed) blocks;
+        // DZ block sizes are fixed at 4MB internally per the MDF4 protocol.
         let mut config = StreamingConfig::new()
-            .with_block_size(self.block_size)
+            .with_block_size(4_000_000)
             .with_compression_threshold(self.compression_threshold);
         if self.compression_level > 0 {
             config = config.with_compression_level(self.compression_level);
