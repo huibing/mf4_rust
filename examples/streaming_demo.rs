@@ -1,10 +1,15 @@
-//! Example: Streaming write for real-time data acquisition
+//! Example: Streaming write with compression for real-time data acquisition
 //!
-//! This example demonstrates how to write MF4 data incrementally, simulating
-//! real-time data acquisition where data is written every second. Each channel
-//! group has its own data group for better compatibility with MDF4 readers.
+//! Simulates 60 seconds of multi-rate automotive data acquisition using the
+//! streaming writer with Deflate compression. The three channel groups produce
+//! enough data to fill multiple DZ blocks (the MDF4 protocol caps each DZ block
+//! at 4 MB, so the fast group generates 3 DZ blocks).
 //!
-//! Run with: cargo run --example streaming_demo --features streaming
+//! Write time is measured separately from any sleep time so the reported
+//! throughput reflects pure MF4 I/O performance.
+//!
+//! Run with:
+//!   cargo run --release --example streaming_demo --features "streaming,compression"
 //!
 //! Output: test/streaming_demo.mf4
 
@@ -18,205 +23,183 @@ use mf4_parse::writer::{
 use mf4_parse::writer::stream_writer::{ChannelGroupDefBuilder, StreamingDataGroup};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Streaming Write Demo ===\n");
+    println!("=== Streaming Write Demo (with compression) ===\n");
 
-    // Create metadata
+    // ─── Simulation parameters ────────────────────────────────────────────────
+    const SIM_SECONDS: usize = 60;   // simulated recording duration
+    const FAST_HZ:    usize = 5_000; // 5 kHz — engine / powertrain
+    const MEDIUM_HZ:  usize =   500; // 500 Hz — chassis / brakes
+    const SLOW_HZ:    usize =   100; // 100 Hz — thermal / fuel
+
+    // Record sizes: time (f64) + 3 signals (f64) = 4 × 8 = 32 bytes per record
+    let fast_bytes   = FAST_HZ   * SIM_SECONDS * 32; // ~9.6 MB → 3 DZ blocks
+    let medium_bytes = MEDIUM_HZ * SIM_SECONDS * 32; //  ~960 KB → 1 DZ block
+    let slow_bytes   = SLOW_HZ   * SIM_SECONDS * 32; //  ~192 KB → 1 DZ block
+
+    println!("Simulation plan:");
+    println!("  Fast   ({:>5} Hz × {} s): {:>6} records  {:>5.1} MB",
+        FAST_HZ, SIM_SECONDS, FAST_HZ * SIM_SECONDS, fast_bytes as f64 / 1e6);
+    println!("  Medium ({:>5} Hz × {} s): {:>6} records  {:>5.1} MB",
+        MEDIUM_HZ, SIM_SECONDS, MEDIUM_HZ * SIM_SECONDS, medium_bytes as f64 / 1e6);
+    println!("  Slow   ({:>5} Hz × {} s): {:>6} records  {:>5.1} MB",
+        SLOW_HZ, SIM_SECONDS, SLOW_HZ * SIM_SECONDS, slow_bytes as f64 / 1e6);
+    println!("  Compression: Deflate (threshold = 0, always on)");
+    println!("  DZ block limit: 4 MB (MDF4 protocol requirement)");
+    println!();
+
+    // ─── Writer setup ─────────────────────────────────────────────────────────
     let metadata = Mf4Metadata::new()
         .with_author("MF4 Parse Demo")
         .with_organization("Test Organization")
-        .with_project("Streaming Time Series Demo")
-        .with_comment("Streaming data acquisition with incremental writes");
+        .with_project("Streaming Compression Demo")
+        .with_comment("Compressed streaming write — multiple DZ blocks per DG");
 
-    // Create streaming configuration
-    let config = StreamingConfig::new().with_block_size(100_000); // 100 KB blocks
+    // block_size only controls DT (uncompressed) flushing; DZ blocks are
+    // always capped at 4 MB internally per the MDF4 protocol.
+    let config = StreamingConfig::new()
+        .with_compression()
+        .with_compression_threshold(0); // compress every block, even small ones
 
-    let mut writer = Mf4StreamWriter::with_config(
-        PathBuf::from("test/streaming_demo.mf4"),
-        metadata,
-        config,
-    )?;
+    let output_path = PathBuf::from("test/streaming_demo.mf4");
+    let mut writer = Mf4StreamWriter::with_config(output_path.clone(), metadata, config)?;
 
-    // ==========================================================================
-    // Define Channel Group 1: Fast sampling (100Hz = 100 samples/sec)
-    // ==========================================================================
-    let time_fast = ChannelDef::new_master("time_fast");
-    let sine_wave = ChannelDef::new("SineWave").data_type(4).unit("V");
-    let cosine_wave = ChannelDef::new("CosineWave").data_type(4).unit("V");
-
-    // Source info for fast sampling channel group
-    let source_fast = SourceInfoBuilder::new()
-        .name("ADC_100Hz")
-        .path("DAQ/Card1/Channel1")
-        .source_type(SourceType::Io)
-        .comment("High-speed analog input card, 100Hz sampling rate, 10ms period")
-        .build()?;
-
+    // ─── Channel group 1: Fast (5 kHz) — powertrain ───────────────────────────
     let cg_fast = ChannelGroupDefBuilder::new()
-        .name("FastSampling_100Hz")
-        .acq_source(source_fast)
-        .master(time_fast)
-        .channel(sine_wave)
-        .channel(cosine_wave)
+        .name("Powertrain_5kHz")
+        .acq_source(
+            SourceInfoBuilder::new()
+                .name("ECU_Powertrain")
+                .path("CAN1/Powertrain")
+                .source_type(SourceType::Ecu)
+                .comment("Engine management unit, 5 kHz crank-angle-synchronous sampling")
+                .build()?,
+        )
+        .master(ChannelDef::new_master("time_fast"))
+        .channel(ChannelDef::new("EngineSpeed").data_type(4).unit("rpm"))
+        .channel(ChannelDef::new("Throttle").data_type(4).unit("%"))
+        .channel(ChannelDef::new("MAP").data_type(4).unit("kPa"))
         .build()?;
 
-    // ==========================================================================
-    // Define Channel Group 2: Medium sampling (20Hz = 20 samples/sec)
-    // ==========================================================================
-    let time_medium = ChannelDef::new_master("time_medium");
-    let square_wave = ChannelDef::new("SquareWave").data_type(4).unit("V");
-    let counter = ChannelDef::new("Counter").data_type(0).bit_count(8).unit("count");
-
-    // Source info for medium sampling channel group (CAN bus)
-    let source_medium = SourceInfoBuilder::new()
-        .name("CAN_Bus_20Hz")
-        .path("CAN1")
-        .source_type(SourceType::Bus)
-        .bus_type(BusType::Can)
-        .comment("CAN bus signal acquisition, 20Hz sampling rate, 50ms period")
-        .build()?;
-
+    // ─── Channel group 2: Medium (500 Hz) — chassis ───────────────────────────
     let cg_medium = ChannelGroupDefBuilder::new()
-        .name("MediumSampling_20Hz")
-        .acq_source(source_medium)
-        .master(time_medium)
-        .channel(square_wave)
-        .channel(counter)
+        .name("Chassis_500Hz")
+        .acq_source(
+            SourceInfoBuilder::new()
+                .name("ABS_Controller")
+                .path("CAN2/Chassis")
+                .source_type(SourceType::Bus)
+                .bus_type(BusType::Can)
+                .comment("ABS/ESC controller, 500 Hz wheel-speed synchronous sampling")
+                .build()?,
+        )
+        .master(ChannelDef::new_master("time_medium"))
+        .channel(ChannelDef::new("VehicleSpeed").data_type(4).unit("km/h"))
+        .channel(ChannelDef::new("BrakePressure").data_type(4).unit("bar"))
+        .channel(ChannelDef::new("SteeringAngle").data_type(4).unit("deg"))
         .build()?;
 
-    // ==========================================================================
-    // Define Channel Group 3: Slow sampling (10Hz = 10 samples/sec)
-    // ==========================================================================
-    let time_slow = ChannelDef::new_master("time_slow");
-    let random_noise = ChannelDef::new("RandomNoise").data_type(4).unit("mV");
-    let status = ChannelDef::new("Status").data_type(0).bit_count(8);
-
-    // Source info for slow sampling channel group (ECU)
-    let source_slow = SourceInfoBuilder::new()
-        .name("ECU_Monitor_10Hz")
-        .path("ECU/Internal")
-        .source_type(SourceType::Ecu)
-        .comment("ECU internal monitoring, 10Hz sampling rate, 100ms period")
-        .build()?;
-
+    // ─── Channel group 3: Slow (100 Hz) — thermal / fuel ─────────────────────
     let cg_slow = ChannelGroupDefBuilder::new()
-        .name("SlowSampling_10Hz")
-        .acq_source(source_slow)
-        .master(time_slow)
-        .channel(random_noise)
-        .channel(status)
+        .name("Thermal_100Hz")
+        .acq_source(
+            SourceInfoBuilder::new()
+                .name("ECU_Thermal")
+                .path("ECU/Thermal")
+                .source_type(SourceType::Ecu)
+                .comment("Thermal and fuel management, 100 Hz polling rate")
+                .build()?,
+        )
+        .master(ChannelDef::new_master("time_slow"))
+        .channel(ChannelDef::new("EngineTemp").data_type(4).unit("°C"))
+        .channel(ChannelDef::new("OilPressure").data_type(4).unit("bar"))
+        .channel(ChannelDef::new("FuelLevel").data_type(4).unit("%"))
         .build()?;
 
-    // Add each channel group as its own data group.
-    // Using separate DGs (one per channel group) is the recommended approach when
-    // channel groups have different sampling rates. MDF4 readers handle single-CG
-    // DGs more reliably than multi-CG DGs.
     writer.add_data_group(StreamingDataGroup::new(cg_fast)?)?;
     writer.add_data_group(StreamingDataGroup::new(cg_medium)?)?;
     writer.add_data_group(StreamingDataGroup::new(cg_slow)?)?;
-
-    // Finalize structure (write file header blocks)
     writer.finalize_structure()?;
-    println!("Structure finalized, ready for streaming data...\n");
 
-    // ==========================================================================
-    // Streaming write: 10 seconds of data, writing once per second
-    // ==========================================================================
-    let duration_sec = 10;
-    let start_time = Instant::now();
+    println!("Structure written. Starting streaming data ({} simulated seconds)…\n",
+        SIM_SECONDS);
 
-    // Sampling rates (samples per second)
-    let samples_per_sec_fast = 100; // 100Hz
-    let samples_per_sec_medium = 20; // 20Hz
-    let samples_per_sec_slow = 10; // 10Hz
+    // ─── Streaming loop ───────────────────────────────────────────────────────
+    // `write_duration` accumulates only the time spent inside MF4 write calls.
+    // Any sleep (simulating real-time pacing) is excluded.
+    let mut write_duration = Duration::ZERO;
+    let mut noise: u64 = 0xDEAD_BEEF_1234_5678;
 
-    println!("Starting streaming write: {} seconds, writing every second", duration_sec);
-    println!("  - Fast (100Hz): {} samples/sec", samples_per_sec_fast);
-    println!("  - Medium (20Hz): {} samples/sec", samples_per_sec_medium);
-    println!("  - Slow (10Hz): {} samples/sec", samples_per_sec_slow);
+    for sec in 0..SIM_SECONDS {
+        let t_write = Instant::now();
 
-    // Pseudo-random state for noise generation
-    let mut noise_state: u64 = 12345;
-
-    for sec in 0..duration_sec {
-        let loop_start = Instant::now();
-
-        // --- Fast sampling (100Hz): write 100 samples ---
-        for i in 0..samples_per_sec_fast {
-            let sample_idx = sec * samples_per_sec_fast + i;
-            let t = sample_idx as f64 * 0.01; // 10ms period
-
-            writer.start_record(0, 0)?; // dg_index=0 (fast DG), cg_index=0
+        // --- Fast: FAST_HZ records per simulated second -----------------------
+        for i in 0..FAST_HZ {
+            let t = (sec * FAST_HZ + i) as f64 / FAST_HZ as f64;
+            writer.start_record(0, 0)?;
             writer.set_channel_value("time_fast", t)?;
-            writer.set_channel_value("SineWave", (2.0 * std::f64::consts::PI * t).sin())?;
-            writer.set_channel_value("CosineWave", (2.0 * std::f64::consts::PI * t).cos())?;
+            writer.set_channel_value("EngineSpeed", 800.0 + 5200.0 * (0.3 * t).sin().powi(2))?;
+            writer.set_channel_value("Throttle",    20.0 + 80.0 * (0.5 * t).abs().sin())?;
+            writer.set_channel_value("MAP",         90.0 + 30.0 * (0.7 * t).cos())?;
             writer.flush_record()?;
         }
 
-        // --- Medium sampling (20Hz): write 20 samples ---
-        for i in 0..samples_per_sec_medium {
-            let sample_idx = sec * samples_per_sec_medium + i;
-            let t = sample_idx as f64 * 0.05; // 50ms period
-
-            writer.start_record(1, 0)?; // dg_index=1 (medium DG), cg_index=0
+        // --- Medium: MEDIUM_HZ records per simulated second -------------------
+        for i in 0..MEDIUM_HZ {
+            let t = (sec * MEDIUM_HZ + i) as f64 / MEDIUM_HZ as f64;
+            writer.start_record(1, 0)?;
             writer.set_channel_value("time_medium", t)?;
-            // Square wave: toggles every 1 second
-            let square_val = if (t * 0.5).floor() % 2.0 == 0.0 {
-                1.0
-            } else {
-                0.0
-            };
-            writer.set_channel_value("SquareWave", square_val)?;
-            writer.set_channel_value("Counter", (sample_idx % 256) as u8)?;
+            writer.set_channel_value("VehicleSpeed",  50.0 + 100.0 * (0.1 * t).sin().powi(2))?;
+            writer.set_channel_value("BrakePressure",  5.0 +  25.0 * (0.4 * t).abs().sin())?;
+            writer.set_channel_value("SteeringAngle", -90.0 * (0.2 * t).sin())?;
             writer.flush_record()?;
         }
 
-        // --- Slow sampling (10Hz): write 10 samples ---
-        for i in 0..samples_per_sec_slow {
-            let sample_idx = sec * samples_per_sec_slow + i;
-            let t = sample_idx as f64 * 0.1; // 100ms period
-
-            writer.start_record(2, 0)?; // dg_index=2 (slow DG), cg_index=0
+        // --- Slow: SLOW_HZ records per simulated second -----------------------
+        for i in 0..SLOW_HZ {
+            let t = (sec * SLOW_HZ + i) as f64 / SLOW_HZ as f64;
+            noise = noise.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let jitter = (noise >> 33) as f64 / u32::MAX as f64 * 0.5; // 0..0.5
+            writer.start_record(2, 0)?;
             writer.set_channel_value("time_slow", t)?;
-
-            // Generate pseudo-random noise
-            noise_state = noise_state.wrapping_mul(1103515245).wrapping_add(12345);
-            let noise_val = ((noise_state % 1000) as f64 / 100.0) - 5.0;
-            writer.set_channel_value("RandomNoise", noise_val)?;
-
-            // Status: cycle through 0,1,2,3 every 2 seconds
-            let status_val = (t / 2.0).floor() as u8 % 4;
-            writer.set_channel_value("Status", status_val)?;
+            writer.set_channel_value("EngineTemp",   85.0 + 15.0 * (0.05 * t).sin() + jitter)?;
+            writer.set_channel_value("OilPressure",   3.5 +  1.5 * (0.08 * t).cos())?;
+            writer.set_channel_value("FuelLevel",   100.0 -  t / SIM_SECONDS as f64 * 20.0)?;
             writer.flush_record()?;
         }
 
-        // Calculate elapsed time and sleep to simulate 1-second interval
-        let elapsed = loop_start.elapsed();
-        let target_duration = Duration::from_secs(1);
-        if elapsed < target_duration {
-            std::thread::sleep(target_duration - elapsed);
-        }
+        write_duration += t_write.elapsed();
 
-        let total_elapsed = start_time.elapsed();
-        println!(
-            "  Second {:2}: wrote {} fast + {} medium + {} slow samples (elapsed: {:.2}s)",
-            sec + 1,
-            samples_per_sec_fast,
-            samples_per_sec_medium,
-            samples_per_sec_slow,
-            total_elapsed.as_secs_f64()
-        );
+        // Simulate real-time pacing with a short sleep (not counted above).
+        std::thread::sleep(Duration::from_millis(1));
+
+        if (sec + 1) % 10 == 0 {
+            println!("  {:>3} s written  (write time so far: {:.3} s)",
+                sec + 1, write_duration.as_secs_f64());
+        }
     }
 
-    // Finalize the file (write data blocks and update metadata)
-    writer.finalize_with_compact(true)?;
+    // ─── Finalize (write DL/HL/DZ chain, update DG links) ────────────────────
+    let t_fin = Instant::now();
+    writer.finalize_with_compact(false)?; // non-compact → DL-chained DZ blocks
+    write_duration += t_fin.elapsed();
 
-    let total_time = start_time.elapsed();
+    // ─── Summary ──────────────────────────────────────────────────────────────
     let total_records = writer.total_records();
+    let file_size = std::fs::metadata(&output_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
 
-    println!("\nStreaming write completed:");
-    println!("  - Total time: {:.2}s", total_time.as_secs_f64());
-    println!("  - Total records: {}", total_records);
-    println!("  - Output file: test/streaming_demo.mf4");
+    println!("\n=== Write complete ===");
+    println!("  MF4 write time : {:.3} s  (sleep time excluded)",
+        write_duration.as_secs_f64());
+    println!("  Total records  : {}", total_records);
+    println!("  Throughput     : {:.0} records/s",
+        total_records as f64 / write_duration.as_secs_f64());
+    println!("  Output file    : {} ({:.2} MB)",
+        output_path.display(), file_size as f64 / 1e6);
+    println!("  Expected DZ blocks (fast group): ≥ {} (each ≤ 4 MB)",
+        (fast_bytes + 4 * 1024 * 1024 - 1) / (4 * 1024 * 1024));
 
     Ok(())
 }
+
