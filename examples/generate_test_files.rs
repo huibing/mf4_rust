@@ -38,19 +38,7 @@ fn main() {
         true,
     );
 
-    // 4. Compact single DZ (compressed)
-    println!("Generating: compact_single_dz.mf4");
-    generate_file(
-        output_dir.join("compact_single_dz.mf4"),
-        StreamingConfig::new()
-            .with_block_size(100)
-            .with_compression()
-            .with_compression_threshold(0),
-        500,
-        true,
-    );
-
-    // 5. Larger file with DL chain (uncompressed, default block size)
+    // 4. Larger file with DL chain (uncompressed, default block size)
     println!("Generating: large_dl_chain.mf4");
     generate_file(
         output_dir.join("large_dl_chain.mf4"),
@@ -59,7 +47,7 @@ fn main() {
         false,
     );
 
-    // 6. Larger file with HL→DL→DZ chain (compressed, default block size)
+    // 5. Larger file with HL→DL→DZ chain (compressed, default block size)
     println!("Generating: large_hl_dl_dz_chain.mf4");
     generate_file(
         output_dir.join("large_hl_dl_dz_chain.mf4"),

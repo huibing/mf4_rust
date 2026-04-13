@@ -2067,10 +2067,10 @@ mod tests {
         let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
         let block_id = read_block_id(&output_path, dg_data_offset);
 
-        // Compact mode should produce a single DT or DZ block
+        // Compact mode (uncompressed) should produce a single DT block
         assert!(
-            block_id == "##DT" || block_id == "##DZ",
-            "Compact mode should produce ##DT or ##DZ, got {}",
+            block_id == "##DT",
+            "Compact mode (uncompressed) should produce ##DT, got {}",
             block_id
         );
 
@@ -2082,32 +2082,76 @@ mod tests {
         cleanup_test_file(&output_path);
     }
 
-    /// Test: Compact mode with compression produces a single ##DZ block.
-    #[cfg(feature = "streaming")]
+    /// Test: compact mode + compression returns an error (mutually exclusive).
+    #[cfg(all(feature = "streaming", feature = "compression"))]
     #[test]
-    fn test_stream_compact_compressed_single_dz() {
+    fn test_compact_compressed_returns_error() {
+        use crate::writer::error::WriteError;
+
         let config = StreamingConfig::new()
-            .with_block_size(100)
             .with_compression()
             .with_compression_threshold(0);
 
-        let output_path = write_stream_file(
-            "temp_compact_compressed.mf4",
+        let output_path = PathBuf::from("temp_compact_compressed_err.mf4");
+        cleanup_test_file(&output_path);
+
+        let metadata = Mf4Metadata::default();
+        let mut writer = Mf4StreamWriter::with_config(
+            output_path.clone(),
+            metadata,
             config,
-            200,
-            true, // compact
+        ).unwrap();
+
+        let cg = ChannelGroupDef::builder()
+            .name("Measurement")
+            .master(ChannelDef::new_master("time"))
+            .channel(ChannelDef::new("Signal").data_type(4).unit("V"))
+            .build()
+            .unwrap();
+        writer.add_data_group(StreamingDataGroup::new(cg).unwrap()).unwrap();
+        writer.finalize_structure().unwrap();
+
+        for i in 0..10 {
+            writer.start_record(0, 0).unwrap();
+            writer.set_channel_value("time", i as f64 * 0.001).unwrap();
+            writer.set_channel_value("Signal", i as f64).unwrap();
+            writer.flush_record().unwrap();
+        }
+
+        // compact=true + compression must return an error
+        let result = writer.finalize_with_compact(true);
+        assert!(
+            matches!(result, Err(WriteError::InvalidChannelConfig(_))),
+            "Expected InvalidChannelConfig error for compact+compressed, got: {:?}",
+            result
         );
 
-        let dg_offset = read_u64_at(&output_path, 88);
-        let dg_data_offset = read_u64_at(&output_path, dg_offset + 24 + 16);
-        let block_id = read_block_id(&output_path, dg_data_offset);
-        assert_eq!(block_id, "##DZ", "Compact + compression should produce ##DZ");
-
-        let mf4 = Mf4Wrapper::new::<fn(f64)>(output_path.clone(), None).unwrap();
-        let data = mf4.get_channel_data("Signal").unwrap();
-        assert_eq!(data.len(), 200);
-
         cleanup_test_file(&output_path);
+    }
+
+    /// Test: SimpleWriter compact_mode + compression returns an error.
+    #[cfg(all(feature = "streaming", feature = "compression"))]
+    #[test]
+    fn test_simple_writer_compact_compressed_returns_error() {
+        use crate::writer::simple_writer::SimpleWriter;
+        use crate::writer::error::WriteError;
+
+        let path = PathBuf::from("temp_sw_compact_compressed_err.mf4");
+        cleanup_test_file(&path);
+
+        let result = SimpleWriter::new(&path)
+            .time_channel("time", "s")
+            .f64_channel("signal", "V")
+            .compact_mode()
+            .compression(6)
+            .build();
+
+        assert!(
+            matches!(result, Err(WriteError::InvalidChannelConfig(_))),
+            "Expected InvalidChannelConfig error for compact_mode+compression"
+        );
+
+        cleanup_test_file(&path);
     }
 
     /// Test: Multi-CG streaming with DL chain — records from different CGs

@@ -1722,13 +1722,17 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
     /// Finalize the file with optional compacting
     ///
     /// # Arguments
-    /// * `compact` - If true, merge all data into a single DT/DZ block.
+    /// * `compact` - If true, write all data as a single DT block (uncompressed only).
     ///               If false, split data into record-aligned chunks linked by DL.
     ///
+    /// # Errors
+    /// Returns `WriteError::InvalidChannelConfig` if `compact = true` and compression
+    /// is enabled — these modes are mutually exclusive. Use `finalize_with_compact(false)`
+    /// (stream mode) for compressed output.
+    ///
     /// # Details
-    /// When `compact` is true:
-    /// - A single DT block (or DZ if compression enabled) is written
-    /// - DG.dg_data → DT or DZ
+    /// When `compact` is true (uncompressed only):
+    /// - A single DT block is written: DG.dg_data → DT
     ///
     /// When `compact` is false (stream write mode):
     /// - Data is split into record-aligned chunks
@@ -1739,6 +1743,12 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
     /// - Each DZ block's uncompressed size ≤ 4MB
     /// - No record spans two data blocks
     pub fn finalize_with_compact(&mut self, compact: bool) -> WriteResult<()> {
+        if compact && self.config.enable_compression {
+            return Err(WriteError::InvalidChannelConfig(
+                "compact mode and compression are mutually exclusive; \
+                 use finalize_with_compact(false) for compressed output".to_string(),
+            ));
+        }
         if self.state == WriterState::Finalized {
             return Err(WriteError::AlreadyFinalized);
         }

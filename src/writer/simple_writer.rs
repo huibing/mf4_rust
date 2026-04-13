@@ -217,6 +217,10 @@ impl SimpleWriterBuilder {
     }
 
     /// Set compression level (0 = off, 1-9 = zlib level)
+    ///
+    /// Note: compression is only compatible with stream mode. Calling both
+    /// `.compression()` and `.compact_mode()` will cause `build()` to return
+    /// an error. Use `.stream_mode()` (the default) with compression.
     pub fn compression(mut self, level: u8) -> Self {
         self.compression_level = level;
         self
@@ -237,7 +241,11 @@ impl SimpleWriterBuilder {
         self
     }
 
-    /// Use compact mode: all data in a single block
+    /// Use compact mode: all data written as a single DT block (uncompressed only)
+    ///
+    /// Note: compact mode is incompatible with compression. Calling both
+    /// `.compact_mode()` and `.compression()` will cause `build()` to return
+    /// an error. Use `.stream_mode()` (the default) for compressed output.
     pub fn compact_mode(mut self) -> Self {
         self.compact = true;
         self
@@ -245,6 +253,12 @@ impl SimpleWriterBuilder {
 
     /// Build the SimpleWriter, ready to accept records
     pub fn build(self) -> WriteResult<SimpleWriter> {
+        if self.compact && self.compression_level > 0 {
+            return Err(WriteError::InvalidChannelConfig(
+                "compact_mode and compression are mutually exclusive; \
+                 use stream_mode() for compressed output".to_string(),
+            ));
+        }
         if self.channels.is_empty() {
             return Err(WriteError::InvalidChannelConfig(
                 "SimpleWriter requires at least one channel".to_string(),
