@@ -849,9 +849,12 @@ flate2 = { version = "1.0", optional = true }
 ### Block Hierarchy (Write Modes)
 
 ```
-Compact mode (single block):
+Compact mode (uncompressed — single DT block):
   DG.dg_data ──→ DT
-  DG.dg_data ──→ DZ          (if compressed)
+
+Compact mode (compressed — single DZ if data ≤ 4MB, chain if data > 4MB):
+  DG.dg_data ──→ DZ                           (data ≤ 4MB)
+  DG.dg_data ──→ HL ──→ DL ──→ DZ₁ ──→ DZₙ  (data > 4MB, same as stream mode)
 
 Stream mode (DL-chained blocks):
   DG.dg_data ──→ DL ──→ DT₁ ──→ DT₂ ──→ ... ──→ DTₙ

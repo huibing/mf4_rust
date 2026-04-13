@@ -42,7 +42,7 @@ Recent changes (2026-04-03 ~ 2026-04-10)
 ### Writing
 - **One-time Write Mode**: Create complete MF4 files in a single operation using `Mf4Builder`
 - **Streaming Write Mode**: Incrementally append data using `Mf4StreamWriter`
-  - **Compact mode**: All data in a single DT/DZ block
+  - **Compact mode**: Single DT block (uncompressed), or DZ chain ≤4MB per block (compressed)
   - **Stream mode**: Data split into DL-chained DT blocks for efficient buffering
   - **Compressed stream mode**: DG → HL → DL → [DZ₁, DZ₂, ...], each DZ ≤ 4MB uncompressed
 - **SimpleWriter**: High-level ergonomic wrapper for common single-channel-group use cases
@@ -243,7 +243,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 5. Finalize — false = stream mode (DL-chained blocks)
-    //              true  = compact mode (single DT/DZ block)
+    //              true  = compact mode (single DT for uncompressed;
+    //                      DZ chain ≤4MB/block for compressed data > 4MB)
     writer.finalize_with_compact(false)?;
 
     Ok(())
@@ -294,7 +295,8 @@ Available channel types: `time_channel`, `f64_channel`, `f32_channel`,
 `u8_channel`, `u16_channel`, `u32_channel`, `u64_channel`,
 `i16_channel`, `i32_channel`.
 
-Use `.compact_mode()` instead of `.stream_mode()` for single-block output.
+Use `.compact_mode()` instead of `.stream_mode()` for single-DT output (uncompressed).
+For compressed data, both modes produce a DZ chain (≤4MB per DZ block, per MDF4 protocol).
 
 ### Sorting MF4 Files
 
