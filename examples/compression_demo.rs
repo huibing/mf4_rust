@@ -1,14 +1,15 @@
 //! Example: Compressed vs Non-Compressed MF4 File Generation
 //!
 //! This example demonstrates how to generate MF4 files with different block strategies:
-//! - **Compact mode**: All data in a single DT or DZ block (good for known-length recordings)
+//! - **Compact mode**: All data in a single DT block (uncompressed), or a DZ chain (compressed,
+//!   since the MDF4 protocol mandates each DZ block ≤ 4MB uncompressed)
 //! - **Stream mode**: Data split into multiple blocks linked by DL (good for open-ended recording)
 //!
 //! Run with: cargo run --example compression_demo --features streaming,compression
 //!
 //! The example generates:
-//! - compact_compressed.mf4:     Single DZ block (compact mode)
-//! - compact_uncompressed.mf4:   Single DT block (compact mode)
+//! - compact_compressed.mf4:     HL → DL → [DZ₁, DZ₂, ...] chain (compact+compressed; each DZ ≤ 4MB)
+//! - compact_uncompressed.mf4:   Single DT block (compact mode, uncompressed)
 //! - stream_compressed.mf4:      HL → DL → [DZ₁, DZ₂, ...] chain (stream mode)
 //! - stream_uncompressed.mf4:    DL → [DT₁, DT₂, ...] chain (stream mode)
 //!
@@ -44,18 +45,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     // ==========================================================================
-    // 1. Compact + Compressed (single DZ block)
+    // 1. Compact + Compressed
+    //    The MDF4 protocol caps every DZ block at 4MB uncompressed. For data
+    //    larger than 4MB, compact+compressed produces the same HL→DL→DZ chain
+    //    as stream+compressed. The distinction between compact and stream modes
+    //    only matters for data ≤ 4MB (compact → single DZ; stream → HL→DL→DZ).
     // ==========================================================================
     let compact_compressed_path = PathBuf::from("compact_compressed.mf4");
-    println!("1. Generating compact_compressed.mf4 (single DZ block)...");
+    println!("1. Generating compact_compressed.mf4 (DZ chain, ≤4MB per DZ block)...");
     write_mf4_file(
         &compact_compressed_path,
         StreamingConfig::new()
-            .with_block_size(10_000_000)
             .with_compression_level(6),
         &signal_patterns,
         true, // compact
-        "Compact mode: single DZ block (all data compressed into one block)",
+        "Compact+compressed: HL → DL → DZ chain (MDF4 requires each DZ ≤ 4MB uncompressed)",
     )?;
 
     // ==========================================================================
@@ -81,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_mf4_file(
         &stream_compressed_path,
         StreamingConfig::new()
-            .with_block_size(4_000_000) // ~4MB blocks, clamped to 4MB DZ limit
+            .with_block_size(4_000_000) // buffer size for DT blocks; DZ blocks are always ≤4MB per MDF4 protocol
             .with_compression_level(6),
         &signal_patterns,
         false, // stream mode (DL chain)
@@ -173,16 +177,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ==========================================================================
     println!("\n=== Summary ===");
     println!("Block structure hierarchy:");
-    println!("  compact_compressed:   DG → DZ (single compressed block)");
+    println!("  compact_compressed:   DG → HL → DL → [DZ₁, DZ₂, ...] (each DZ ≤ 4MB)");
     println!("  compact_uncompressed: DG → DT (single uncompressed block)");
-    println!("  stream_compressed:    DG → HL → DL → [DZ₁, DZ₂, ...] (each ≤ 4MB)");
+    println!("  stream_compressed:    DG → HL → DL → [DZ₁, DZ₂, ...] (each DZ ≤ 4MB)");
     println!("  stream_uncompressed:  DG → DL → [DT₁, DT₂, ...]");
     println!("\nKey points:");
-    println!("  - Stream mode uses DL-chained blocks for open-ended recordings");
-    println!("  - Compressed DZ blocks are capped at 4MB uncompressed size");
+    println!("  - DZ block uncompressed size is capped at 4MB (MDF4 protocol requirement, not configurable)");
     println!("  - Record boundaries are preserved — no record spans two blocks");
-    println!("  - finalize()/finalize_with_compact(false) → stream mode (DL chain)");
-    println!("  - finalize_with_compact(true) → compact mode (single block)");
+    println!("  - block_size only affects DT (uncompressed) buffer flushing, not DZ block size");
+    println!("  - finalize_with_compact(false) → stream mode (DL chain)");
+    println!("  - finalize_with_compact(true) → single DT for uncompressed; DZ chain for compressed data > 4MB");
 
     Ok(())
 }

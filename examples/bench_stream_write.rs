@@ -117,6 +117,7 @@ fn main() {
     println!("{}", "-".repeat(105));
 
     // Full API benchmarks
+    // block_size controls DT (uncompressed) buffer flushing; DZ blocks are always ≤4MB internally
     let config_plain = StreamingConfig::new().with_block_size(4_000_000);
     let config_compressed = StreamingConfig::new()
         .with_block_size(4_000_000)
