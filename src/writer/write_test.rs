@@ -3060,4 +3060,83 @@ mod tests {
 
         cleanup_test_file(&path);
     }
+
+    /// Test: f64 values written to u16 / i32 / f32 channels are correctly encoded
+    /// (verifies that RecordValue for f64 honors data_type and bit_count).
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_f64_to_integer_and_float_channel_encoding() {
+        use crate::writer::stream_writer::{ChannelDef, ChannelGroupDefBuilder, Mf4StreamWriter, StreamingConfig, StreamingDataGroup};
+        use crate::writer::builder::Mf4Metadata;
+        use crate::DataValue;
+
+        let path = PathBuf::from("test_f64_channel_encoding.mf4");
+        cleanup_test_file(&path);
+
+        let cg = ChannelGroupDefBuilder::new()
+            .name("enc_test")
+            .master(ChannelDef::new_master("time"))
+            // u16 channel (data_type=0, bit_count=16)
+            .channel(ChannelDef::new("u16_ch").data_type(0).bit_count(16))
+            // i32 channel (data_type=2, bit_count=32)
+            .channel(ChannelDef::new("i32_ch").data_type(2).bit_count(32))
+            // f32 channel (data_type=4, bit_count=32)
+            .channel(ChannelDef::new("f32_ch").data_type(4).bit_count(32))
+            .build()
+            .unwrap();
+
+        let config = StreamingConfig::new();
+        let meta = Mf4Metadata::new();
+        let mut writer = Mf4StreamWriter::with_config(path.clone(), meta, config).unwrap();
+        writer.add_data_group(StreamingDataGroup::new(cg).unwrap()).unwrap();
+        writer.finalize_structure().unwrap();
+
+        // u16_ch: 1000, 2000, 65000  |  i32_ch: -1, 0, 42  |  f32_ch: 3.14, -2.5, 0.0
+        let samples: &[(f64, f64, f64, f64)] = &[
+            (0.0,  1000.0, -1.0,   3.14),
+            (0.1,  2000.0,  0.0,  -2.5),
+            (0.2, 65000.0, 42.0,   0.0),
+        ];
+
+        for &(t, u, i, f) in samples {
+            writer.start_record(0, 0).unwrap();
+            writer.set_channel_value("time",   t).unwrap();
+            writer.set_channel_value("u16_ch", u).unwrap();
+            writer.set_channel_value("i32_ch", i).unwrap();
+            writer.set_channel_value("f32_ch", f).unwrap();
+            writer.flush_record().unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+
+        // Verify u16 values
+        // get_channel_data applies CC (identity for no-CC channels) and returns REAL.
+        // Use get_channel_raw_data to check the typed raw values.
+        let u16_raw = mf4.get_channel_raw_data("u16_ch").unwrap();
+        if let DataValue::UINT16(vals) = u16_raw {
+            assert_eq!(vals, vec![1000u16, 2000, 65000], "u16 encoding mismatch");
+        } else {
+            panic!("expected UINT16 for u16_ch");
+        }
+
+        // Verify i32 values
+        if let DataValue::INT32(vals) = mf4.get_channel_raw_data("i32_ch").unwrap() {
+            assert_eq!(vals, vec![-1i32, 0, 42], "i32 encoding mismatch");
+        } else {
+            panic!("expected INT32 for i32_ch, got {:?}", mf4.get_channel_raw_data("i32_ch"));
+        }
+
+        // Verify f32 values (allow small float rounding tolerance)
+        if let DataValue::SINGLE(vals) = mf4.get_channel_raw_data("f32_ch").unwrap() {
+            assert_eq!(vals.len(), 3, "f32 record count mismatch");
+            assert!((vals[0] - 3.14f32).abs() < 1e-5, "f32[0] mismatch: {}", vals[0]);
+            assert!((vals[1] - (-2.5f32)).abs() < 1e-5, "f32[1] mismatch: {}", vals[1]);
+            assert!((vals[2] - 0.0f32).abs() < 1e-5, "f32[2] mismatch: {}", vals[2]);
+        } else {
+            panic!("expected SINGLE for f32_ch, got {:?}", mf4.get_channel_raw_data("f32_ch"));
+        }
+
+        cleanup_test_file(&path);
+    }
 }
