@@ -130,6 +130,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Reading Textual Channel Data
+
+For channels whose values are represented as text — including string channels
+(`cn_data_type` 6–9), VTAB channels (CC type 7), and VRange-to-text channels
+(CC type 8) — use `get_channel_text_data`, which returns `Vec<String>` directly:
+
+```rust
+use mf4_parse::Mf4Wrapper;
+use std::path::PathBuf;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mf4 = Mf4Wrapper::new::<fn(f64)>(PathBuf::from("gear_log.mf4"), None)?;
+
+    // Works for VTAB / VRange-to-text channels:
+    if let Some(labels) = mf4.get_channel_text_data("gear") {
+        for (i, label) in labels.iter().enumerate() {
+            println!("sample {i}: {label}");   // e.g. "First", "Second", "N/A"
+        }
+    }
+
+    // Works for string channels too:
+    if let Some(msgs) = mf4.get_channel_text_data("error_msg") {
+        println!("{:?}", msgs);
+    }
+
+    // Numeric channels return None:
+    assert!(mf4.get_channel_text_data("rpm").is_none());
+
+    Ok(())
+}
+```
+
+You can also test a `DataValue` directly:
+
+```rust
+use mf4_parse::DataValue;
+
+let data = mf4.get_channel_data("gear").unwrap();
+if data.is_text() {
+    let texts: Vec<String> = data.into_text().unwrap();
+    println!("{:?}", texts);
+}
+```
+
 ### Writing MF4 Files (One-time Write)
 
 Use `Mf4Builder` to create complete MF4 files in a single operation:
