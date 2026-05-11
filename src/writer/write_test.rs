@@ -3186,4 +3186,46 @@ mod tests {
 
         cleanup_test_file(&path);
     }
+
+    /// Roundtrip: write a VRange-to-text (CC type 8) channel, read back with get_channel_text_data
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_vrange_text_channel_roundtrip() {
+        use crate::writer::simple_writer::SimpleWriter;
+        use crate::parser::Mf4Wrapper;
+
+        let path = PathBuf::from("test_vrange_text_roundtrip.mf4");
+        cleanup_test_file(&path);
+
+        // Ranges: [0.0, 30.0) → "Cold", [30.0, 70.0) → "Normal", [70.0, 100.0] → "Hot"
+        let mut writer = SimpleWriter::new(&path)
+            .time_channel("time", "s")
+            .vrange_channel(
+                "temp_label",
+                4, // REAL LE (f64)
+                64,
+                vec![(0.0, 30.0), (30.0, 70.0), (70.0, 100.0)],
+                vec!["Cold".into(), "Normal".into(), "Hot".into()],
+                "OutOfRange",
+            )
+            .build()
+            .expect("build writer");
+
+        // Write: 10.0 → Cold, 50.0 → Normal, 85.0 → Hot, -5.0 → OutOfRange
+        for (t, v) in [(0.0f64, 10.0), (1.0, 50.0), (2.0, 85.0), (3.0, -5.0)] {
+            writer.write_record(&[t, v]).expect("write record");
+        }
+        writer.finalize().expect("finalize");
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        let texts = mf4.get_channel_text_data("temp_label").expect("text data for temp_label");
+
+        assert_eq!(texts.len(), 4);
+        assert_eq!(texts[0], "Cold");
+        assert_eq!(texts[1], "Normal");
+        assert_eq!(texts[2], "Hot");
+        assert_eq!(texts[3], "OutOfRange");
+
+        cleanup_test_file(&path);
+    }
 }
