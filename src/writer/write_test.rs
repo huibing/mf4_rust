@@ -3228,4 +3228,53 @@ mod tests {
 
         cleanup_test_file(&path);
     }
+
+    /// Roundtrip: vtab channel with compression enabled (DZ blocks)
+    #[cfg(all(feature = "streaming", feature = "compression"))]
+    #[test]
+    fn test_vtab_text_channel_compressed_roundtrip() {
+        use crate::writer::simple_writer::SimpleWriter;
+        use crate::parser::Mf4Wrapper;
+
+        let path = PathBuf::from("test_vtab_compressed_roundtrip.mf4");
+        cleanup_test_file(&path);
+
+        let labels: Vec<(&str, u8)> = vec![
+            ("Idle", 0), ("Running", 1), ("Error", 2), ("Standby", 3),
+        ];
+
+        let mut writer = SimpleWriter::new(&path)
+            .time_channel("time", "s")
+            .vtab_u8_channel(
+                "status",
+                labels.iter().map(|(_, k)| *k as f64).collect(),
+                labels.iter().map(|(t, _)| t.to_string()).collect(),
+                "Unknown",
+            )
+            .compression(6)
+            .compression_threshold(0)  // always compress
+            .build()
+            .expect("build compressed writer");
+
+        let sequence = [0u8, 1, 2, 3, 1, 0, 2, 4]; // 4 → "Unknown"
+        for (i, &v) in sequence.iter().enumerate() {
+            writer.write_record(&[i as f64, v as f64]).expect("write record");
+        }
+        writer.finalize().expect("finalize");
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        let texts = mf4.get_channel_text_data("status").expect("text data for compressed vtab");
+
+        assert_eq!(texts.len(), 8);
+        assert_eq!(texts[0], "Idle");
+        assert_eq!(texts[1], "Running");
+        assert_eq!(texts[2], "Error");
+        assert_eq!(texts[3], "Standby");
+        assert_eq!(texts[4], "Running");
+        assert_eq!(texts[5], "Idle");
+        assert_eq!(texts[6], "Error");
+        assert_eq!(texts[7], "Unknown");  // value 4 → default
+
+        cleanup_test_file(&path);
+    }
 }
