@@ -268,6 +268,35 @@ impl ConversionBuilder {
         }
     }
 
+    /// Create a Value-to-Text conversion (CC type 7).
+    ///
+    /// Raw numeric values are stored in the data section; the CC block maps
+    /// each key to the corresponding display string. Unmatched values use `default`.
+    pub fn value2text(keys: Vec<f64>, texts: Vec<String>, default: String) -> Self {
+        Self {
+            name: None,
+            cc_type: 7,
+            params: ConversionParams::Value2Text { keys, texts, default },
+            unit: None,
+            comment: None,
+        }
+    }
+
+    /// Create a Value-Range-to-Text conversion (CC type 8).
+    ///
+    /// Raw numeric values are stored in the data section; the CC block maps
+    /// each `[min, max]` range to the corresponding display string.
+    /// Values outside all ranges use `default`.
+    pub fn value_range2text(ranges: Vec<(f64, f64)>, texts: Vec<String>, default: String) -> Self {
+        Self {
+            name: None,
+            cc_type: 8,
+            params: ConversionParams::ValueRange2Text { ranges, texts, default },
+            unit: None,
+            comment: None,
+        }
+    }
+
     /// Set the conversion name
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = Some(name.to_string());

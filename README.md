@@ -298,6 +298,132 @@ Available channel types: `time_channel`, `f64_channel`, `f32_channel`,
 Use `.compact_mode()` instead of `.stream_mode()` for single-DT output (uncompressed).
 For compressed data, both modes produce a DZ chain (≤4MB per DZ block, per MDF4 protocol).
 
+### Writing Value-to-Text (VTAB) Channels
+
+VTAB channels store raw numeric values in the data section and use a CC block
+(conversion type 7 or 8) to map raw values to display strings.
+
+#### Streaming write — CC type 7 (exact key match)
+
+```rust
+use mf4_parse::writer::stream_writer::{
+    ChannelDef, ChannelGroupDefBuilder, Mf4StreamWriter, StreamingConfig, StreamingDataGroup,
+};
+use mf4_parse::writer::Mf4Metadata;
+use std::path::PathBuf;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cg = ChannelGroupDefBuilder::new()
+        .name("Gear")
+        .with_time_channel("time")
+        // u8 channel; keys 1/2/3 display "1st"/"2nd"/"3rd"; unmatched → "N/A"
+        .add_vtab_channel(
+            "gear", 0, 8,
+            vec![1.0, 2.0, 3.0],
+            vec!["1st".into(), "2nd".into(), "3rd".into()],
+            "N/A",
+        )
+        .build()?;
+
+    let mut writer = Mf4StreamWriter::with_config(
+        PathBuf::from("gear.mf4"), Mf4Metadata::new(), StreamingConfig::new(),
+    )?;
+    writer.add_data_group(StreamingDataGroup::new(cg)?)?;
+    writer.finalize_structure()?;
+
+    for (t, gear) in [(0.0, 1u8), (0.1, 2), (0.2, 3), (0.3, 1)] {
+        writer.start_record(0, 0)?;
+        writer.set_channel_value("time", t)?;
+        writer.set_channel_value("gear", gear as f64)?;
+        writer.flush_record()?;
+    }
+    writer.finalize()?;
+    Ok(())
+}
+```
+
+#### Streaming write — CC type 8 (range match)
+
+```rust
+let cg = ChannelGroupDefBuilder::new()
+    .name("TempBand")
+    .with_time_channel("time")
+    // f64 channel; ranges [0,30) → "Cold", [30,70) → "Warm", [70,100] → "Hot"
+    .add_vrange_channel(
+        "temp_band", 4, 64,
+        vec![(0.0, 30.0), (30.0, 70.0), (70.0, 100.0)],
+        vec!["Cold".into(), "Warm".into(), "Hot".into()],
+        "OOB",
+    )
+    .build()?;
+```
+
+#### SimpleWriter — vtab / vrange shorthand
+
+```rust
+use mf4_parse::writer::SimpleWriter;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut writer = SimpleWriter::new("status.mf4")
+        .time_channel("time", "s")
+        // CC type 7 — exact key match (u8 raw storage)
+        .vtab_u8_channel(
+            "status",
+            vec![0.0, 1.0, 2.0],
+            vec!["Off".into(), "On".into(), "Fault".into()],
+            "N/A",
+        )
+        // CC type 8 — range match (u8 raw storage)
+        .vrange_u8_channel(
+            "level",
+            vec![(0.0, 49.0), (50.0, 100.0)],
+            vec!["Low".into(), "High".into()],
+            "N/A",
+        )
+        .build()?;
+
+    writer.write_record(&[0.0, 0.0, 25.0])?;   // status=Off, level=Low
+    writer.write_record(&[0.1, 1.0, 75.0])?;   // status=On,  level=High
+    writer.finalize()?;
+    Ok(())
+}
+```
+
+#### One-time write (`Mf4Builder`) — CC type 7
+
+```rust
+use mf4_parse::writer::{
+    Mf4Builder, Mf4Metadata, DataGroupBuilder, ChannelGroupBuilder, ChannelBuilder,
+    ConversionBuilder,
+};
+use std::path::PathBuf;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let gear_channel = ChannelBuilder::new("gear")
+        .data_type(0)    // UINT LE
+        .bit_count(8)
+        .conversion(ConversionBuilder::value2text(
+            vec![1.0, 2.0, 3.0],
+            vec!["1st".into(), "2nd".into(), "3rd".into()],
+            "N/A".into(),
+        ))
+        .build()?;
+
+    let cg = ChannelGroupBuilder::new()
+        .name("Gear")
+        .master(ChannelBuilder::new_master_time("time"))
+        .channel(gear_channel)
+        .build()?;
+
+    let mut builder = Mf4Builder::new(Mf4Metadata::new());
+    builder.add_data_group(DataGroupBuilder::new().channel_group(cg));
+    builder.set_channel_data("time", &[0.0_f64, 0.1, 0.2])?;
+    builder.set_channel_data("gear", &[1.0_f64, 2.0, 3.0])?;
+    builder.write(PathBuf::from("gear_block.mf4"))?;
+    Ok(())
+}
+```
+
 ### Sorting MF4 Files
 
 Convert unsorted MF4 files (multiple ChannelGroups per DataGroup) to sorted format:

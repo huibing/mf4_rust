@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::io::{BufWriter, Write, Seek};
 
 use super::error::{WriteError, WriteResult};
-use super::builder::{Mf4Metadata, SourceInfoBuilder};
+use super::builder::{Mf4Metadata, SourceInfoBuilder, ConversionParams};
 
 // ============================================================================
 // Streaming Configuration
@@ -145,6 +145,8 @@ pub struct ChannelDef {
     pub cn_type: u8,
     /// Sync type (None, Time, Angle, Distance, Index)
     pub sync_type: u8,
+    /// Optional conversion (e.g. Value2Text / vtab)
+    pub conversion: Option<ConversionParams>,
 }
 
 impl ChannelDef {
@@ -159,6 +161,7 @@ impl ChannelDef {
             unit: None,
             cn_type: 0,
             sync_type: 0,
+            conversion: None,
         }
     }
 
@@ -173,6 +176,7 @@ impl ChannelDef {
             unit: Some("s".to_string()),
             cn_type: 2, // Master
             sync_type: 1, // Time
+            conversion: None,
         }
     }
 
@@ -191,6 +195,40 @@ impl ChannelDef {
     /// Set the unit
     pub fn unit(mut self, unit: &str) -> Self {
         self.unit = Some(unit.to_string());
+        self
+    }
+
+    /// Attach a Value-to-Text (vtab) conversion (CC type 7).
+    ///
+    /// `keys` are the raw numeric values stored in the data section.
+    /// `texts` are the corresponding display strings (one per key).
+    /// `default` is the fallback text for unmatched raw values.
+    ///
+    /// # Example
+    /// ```ignore
+    /// ChannelDef::new("gear")
+    ///     .data_type(0).bit_count(8)
+    ///     .vtab(vec![1.0, 2.0, 3.0], vec!["1st".into(), "2nd".into(), "3rd".into()], "N/A".into())
+    /// ```
+    pub fn vtab(mut self, keys: Vec<f64>, texts: Vec<String>, default: String) -> Self {
+        self.conversion = Some(ConversionParams::Value2Text { keys, texts, default });
+        self
+    }
+
+    /// Attach a Value-Range-to-Text conversion (CC type 8).
+    ///
+    /// `ranges` are `(min, max)` inclusive bounds for each entry.
+    /// `texts` are the corresponding display strings (one per range).
+    /// `default` is the fallback text for values that match no range.
+    ///
+    /// # Example
+    /// ```ignore
+    /// ChannelDef::new("temp_band")
+    ///     .data_type(4).bit_count(64)
+    ///     .vrange(vec![(0.0, 50.0), (50.0, 100.0)], vec!["Cold".into(), "Hot".into()], "OOB".into())
+    /// ```
+    pub fn vrange(mut self, ranges: Vec<(f64, f64)>, texts: Vec<String>, default: String) -> Self {
+        self.conversion = Some(ConversionParams::ValueRange2Text { ranges, texts, default });
         self
     }
 
@@ -360,6 +398,60 @@ impl ChannelGroupDefBuilder {
     /// Add an i64 data channel (INT LE, 64-bit)
     pub fn add_i64_channel(self, name: &str, unit: &str) -> Self {
         self.channel(ChannelDef::new(name).data_type(2).bit_count(64).unit(unit))
+    }
+
+    /// Add a Value-to-Text (vtab, CC type 7) channel.
+    ///
+    /// Raw numeric values (`data_type`, `bit_count`) are stored in the data section.
+    /// The CC block maps each key to the corresponding display text; unmatched values
+    /// fall back to `default`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// cg_builder.add_vtab_channel(
+    ///     "gear", 0, 8,
+    ///     vec![1.0, 2.0, 3.0],
+    ///     vec!["1st".into(), "2nd".into(), "3rd".into()],
+    ///     "N/A",
+    /// )
+    /// ```
+    pub fn add_vtab_channel(
+        self,
+        name: &str,
+        data_type: u8,
+        bit_count: u32,
+        keys: Vec<f64>,
+        texts: Vec<String>,
+        default: &str,
+    ) -> Self {
+        self.channel(
+            ChannelDef::new(name)
+                .data_type(data_type)
+                .bit_count(bit_count)
+                .vtab(keys, texts, default.to_string()),
+        )
+    }
+
+    /// Add a channel with a Value-Range-to-Text (CC type 8) conversion.
+    ///
+    /// Raw numeric values are stored in the data section; the CC block maps
+    /// each `[min, max]` range to a display string. Values outside all ranges
+    /// fall back to `default`.
+    pub fn add_vrange_channel(
+        self,
+        name: &str,
+        data_type: u8,
+        bit_count: u32,
+        ranges: Vec<(f64, f64)>,
+        texts: Vec<String>,
+        default: &str,
+    ) -> Self {
+        self.channel(
+            ChannelDef::new(name)
+                .data_type(data_type)
+                .bit_count(bit_count)
+                .vrange(ranges, texts, default.to_string()),
+        )
     }
 
     /// Build the channel group definition
@@ -680,8 +772,27 @@ pub trait RecordValue {
 }
 
 impl RecordValue for f64 {
-    fn write_to_record(&self, record: &mut RecordData, offset: usize, _data_type: u8, _bit_count: u32) {
-        record.write_f64_le(offset, *self);
+    fn write_to_record(&self, record: &mut RecordData, offset: usize, data_type: u8, bit_count: u32) {
+        match (data_type, bit_count) {
+            // IEEE 754 float (LE/BE both written LE here — BE swapped at record level if needed)
+            (4 | 5, 32) => record.write_f32_le(offset, *self as f32),
+            (4 | 5, 16) => {
+                let h = half::f16::from_f64(*self);
+                record.write_u16_le(offset, h.to_bits());
+            }
+            // Unsigned integers
+            (0 | 1,  8) => record.write_u8(offset, *self as u8),
+            (0 | 1, 16) => record.write_u16_le(offset, *self as u16),
+            (0 | 1, 32) => record.write_u32_le(offset, *self as u32),
+            (0 | 1, 64) => record.write_u64_le(offset, *self as u64),
+            // Signed integers
+            (2 | 3,  8) => record.write_u8(offset, (*self as i8) as u8),
+            (2 | 3, 16) => record.write_u16_le(offset, (*self as i16) as u16),
+            (2 | 3, 32) => record.write_u32_le(offset, (*self as i32) as u32),
+            (2 | 3, 64) => record.write_u64_le(offset, (*self as i64) as u64),
+            // f64 (data_type 4/5, 64-bit) and any unrecognised type
+            _ => record.write_f64_le(offset, *self),
+        }
     }
 }
 
@@ -1514,6 +1625,68 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
                         &super::block_writer::TxBlock::new(&ch.name)
                     )?;
 
+                    // Write optional CC block (e.g. Value2Text / vtab)
+                    let cc_conversion_offset = match &ch.conversion {
+                        Some(ConversionParams::Value2Text { keys, texts, default }) => {
+                            // Write one TX block per text entry + one default TX block
+                            let mut ref_offsets: Vec<u64> = Vec::with_capacity(texts.len() + 1);
+                            for text in texts {
+                                let off = block_writer.write_tx_block(
+                                    &super::block_writer::TxBlock::new(text)
+                                )?;
+                                ref_offsets.push(off);
+                            }
+                            let default_off = block_writer.write_tx_block(
+                                &super::block_writer::TxBlock::new(default)
+                            )?;
+                            ref_offsets.push(default_off);
+
+                            let cc_offset = block_writer.position();
+                            let cc_val: Vec<u64> = keys.iter().map(|k| k.to_bits()).collect();
+                            block_writer.write_cc_block(&super::block_writer::CcBlock {
+                                cc_type: 7,
+                                cc_ref_count: ref_offsets.len() as u16,
+                                cc_val_count: cc_val.len() as u16,
+                                cc_val,
+                                cc_ref: ref_offsets,
+                                ..Default::default()
+                            })?;
+                            cc_offset
+                        }
+                        Some(ConversionParams::ValueRange2Text { ranges, texts, default }) => {
+                            // Write one TX block per range text + one default TX block
+                            let mut ref_offsets: Vec<u64> = Vec::with_capacity(texts.len() + 1);
+                            for text in texts {
+                                let off = block_writer.write_tx_block(
+                                    &super::block_writer::TxBlock::new(text)
+                                )?;
+                                ref_offsets.push(off);
+                            }
+                            let default_off = block_writer.write_tx_block(
+                                &super::block_writer::TxBlock::new(default)
+                            )?;
+                            ref_offsets.push(default_off);
+
+                            let cc_offset = block_writer.position();
+                            // cc_val = [min0, max0, min1, max1, ...] as f64 bits
+                            let mut cc_val: Vec<u64> = Vec::with_capacity(ranges.len() * 2);
+                            for (min, max) in ranges {
+                                cc_val.push(min.to_bits());
+                                cc_val.push(max.to_bits());
+                            }
+                            block_writer.write_cc_block(&super::block_writer::CcBlock {
+                                cc_type: 8,
+                                cc_ref_count: ref_offsets.len() as u16,
+                                cc_val_count: cc_val.len() as u16,
+                                cc_val,
+                                cc_ref: ref_offsets,
+                                ..Default::default()
+                            })?;
+                            cc_offset
+                        }
+                        _ => 0,
+                    };
+
                     // Write CN block
                     let cn_offset = block_writer.position();
                     cn_offset_list.push(cn_offset);
@@ -1523,7 +1696,7 @@ impl<W: Write + Seek> Mf4StreamWriter<W> {
                         cn_composition: 0,
                         cn_tx_name: tx_offset,
                         cn_si_source: 0,
-                        cn_cc_conversion: 0,
+                        cn_cc_conversion: cc_conversion_offset,
                         cn_data: 0,
                         cn_md_unit: 0,
                         cn_md_comment: 0,

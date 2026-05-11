@@ -984,7 +984,7 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
 
         let link_count = 4 + cc.cc_ref.len() as u64;
         let val_bytes = (cc.cc_val.len() * 8) as u64;
-        let block_len = 24 + link_count * 8 + 80 + val_bytes;
+        let block_len = 24 + link_count * 8 + 24 + val_bytes;
 
         // Block ID
         self.writer.write_all(block_id::CC)?;
@@ -1012,8 +1012,6 @@ impl<'a, W: Write + Seek> BlockWriter<'a, W> {
         self.writer.write_all(&cc.cc_flags.to_le_bytes())?;
         self.writer.write_all(&cc.cc_ref_count.to_le_bytes())?;
         self.writer.write_all(&cc.cc_val_count.to_le_bytes())?;
-        // Reserved (2 bytes)
-        self.writer.write_all(&[0u8; 2])?;
 
         // Physical range
         self.writer.write_all(&cc.cc_phy_range_min.to_le_bytes())?;

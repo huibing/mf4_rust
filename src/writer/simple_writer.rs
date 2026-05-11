@@ -36,6 +36,8 @@ struct SimpleChannel {
     data_type: u8,
     bit_count: u32,
     is_master: bool,
+    vtab: Option<(Vec<f64>, Vec<String>, String)>,
+    vrange: Option<(Vec<(f64, f64)>, Vec<String>, String)>,
 }
 
 /// Builder for constructing a [`SimpleWriter`] with fluent API
@@ -116,6 +118,8 @@ impl SimpleWriterBuilder {
             data_type: 4,
             bit_count: 64,
             is_master: true,
+            vtab: None,
+            vrange: None,
         });
         self
     }
@@ -128,6 +132,8 @@ impl SimpleWriterBuilder {
             data_type: 4,
             bit_count: 64,
             is_master: false,
+            vtab: None,
+            vrange: None,
         });
         self
     }
@@ -140,6 +146,8 @@ impl SimpleWriterBuilder {
             data_type: 4,
             bit_count: 32,
             is_master: false,
+            vtab: None,
+            vrange: None,
         });
         self
     }
@@ -152,6 +160,8 @@ impl SimpleWriterBuilder {
             data_type: 0,
             bit_count: 8,
             is_master: false,
+            vtab: None,
+            vrange: None,
         });
         self
     }
@@ -164,6 +174,8 @@ impl SimpleWriterBuilder {
             data_type: 0,
             bit_count: 16,
             is_master: false,
+            vtab: None,
+            vrange: None,
         });
         self
     }
@@ -176,6 +188,8 @@ impl SimpleWriterBuilder {
             data_type: 0,
             bit_count: 32,
             is_master: false,
+            vtab: None,
+            vrange: None,
         });
         self
     }
@@ -188,6 +202,8 @@ impl SimpleWriterBuilder {
             data_type: 0,
             bit_count: 64,
             is_master: false,
+            vtab: None,
+            vrange: None,
         });
         self
     }
@@ -200,6 +216,8 @@ impl SimpleWriterBuilder {
             data_type: 2,
             bit_count: 16,
             is_master: false,
+            vtab: None,
+            vrange: None,
         });
         self
     }
@@ -212,6 +230,116 @@ impl SimpleWriterBuilder {
             data_type: 2,
             bit_count: 32,
             is_master: false,
+            vtab: None,
+            vrange: None,
+        });
+        self
+    }
+
+    /// Add a u8 channel with a Value-to-Text (vtab, CC type 7) conversion.
+    ///
+    /// Raw u8 values are stored in the data section; the CC block maps each key
+    /// to the corresponding display text. Unmatched values use `default`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// builder.vtab_u8_channel(
+    ///     "gear",
+    ///     vec![1.0, 2.0, 3.0],
+    ///     vec!["1st".into(), "2nd".into(), "3rd".into()],
+    ///     "N/A",
+    /// )
+    /// ```
+    pub fn vtab_u8_channel(
+        mut self,
+        name: &str,
+        keys: Vec<f64>,
+        texts: Vec<String>,
+        default: &str,
+    ) -> Self {
+        self.channels.push(SimpleChannel {
+            name: name.to_string(),
+            unit: String::new(),
+            data_type: 0, // UINT LE
+            bit_count: 8,
+            is_master: false,
+            vtab: Some((keys, texts, default.to_string())),
+            vrange: None,
+        });
+        self
+    }
+
+    /// Add a channel with a Value-to-Text (vtab, CC type 7) conversion with explicit type.
+    ///
+    /// `data_type` and `bit_count` define the raw storage type.
+    /// Raw values are stored in the data section; the CC block maps each key
+    /// to the corresponding display text. Unmatched values use `default`.
+    pub fn vtab_channel(
+        mut self,
+        name: &str,
+        data_type: u8,
+        bit_count: u32,
+        keys: Vec<f64>,
+        texts: Vec<String>,
+        default: &str,
+    ) -> Self {
+        self.channels.push(SimpleChannel {
+            name: name.to_string(),
+            unit: String::new(),
+            data_type,
+            bit_count,
+            is_master: false,
+            vtab: Some((keys, texts, default.to_string())),
+            vrange: None,
+        });
+        self
+    }
+
+    /// Add a u8 channel with a Value-Range-to-Text (CC type 8) conversion.
+    ///
+    /// Raw u8 values are stored in the data section; the CC block maps each
+    /// `[min, max]` range to a display string. Values outside all ranges use `default`.
+    pub fn vrange_u8_channel(
+        mut self,
+        name: &str,
+        ranges: Vec<(f64, f64)>,
+        texts: Vec<String>,
+        default: &str,
+    ) -> Self {
+        self.channels.push(SimpleChannel {
+            name: name.to_string(),
+            unit: String::new(),
+            data_type: 0, // UINT LE
+            bit_count: 8,
+            is_master: false,
+            vtab: None,
+            vrange: Some((ranges, texts, default.to_string())),
+        });
+        self
+    }
+
+    /// Add a channel with a Value-Range-to-Text (CC type 8) conversion and explicit type.
+    ///
+    /// `data_type` and `bit_count` define the raw storage type.
+    /// Raw values are stored in the data section; the CC block maps each
+    /// `[min, max]` range to a display string. Unmatched values use `default`.
+    pub fn vrange_channel(
+        mut self,
+        name: &str,
+        data_type: u8,
+        bit_count: u32,
+        ranges: Vec<(f64, f64)>,
+        texts: Vec<String>,
+        default: &str,
+    ) -> Self {
+        self.channels.push(SimpleChannel {
+            name: name.to_string(),
+            unit: String::new(),
+            data_type,
+            bit_count,
+            is_master: false,
+            vtab: None,
+            vrange: Some((ranges, texts, default.to_string())),
         });
         self
     }
@@ -302,12 +430,17 @@ impl SimpleWriterBuilder {
                 // Override unit if not "s"
                 // new_master sets unit="s" by default, keep it for now
             } else {
-                cg_builder = cg_builder.channel(
-                    ChannelDef::new(&ch.name)
-                        .data_type(ch.data_type)
-                        .bit_count(ch.bit_count)
-                        .unit(&ch.unit),
-                );
+                let mut cd = ChannelDef::new(&ch.name)
+                    .data_type(ch.data_type)
+                    .bit_count(ch.bit_count)
+                    .unit(&ch.unit);
+                if let Some((keys, texts, default)) = &ch.vtab {
+                    cd = cd.vtab(keys.clone(), texts.clone(), default.clone());
+                }
+                if let Some((ranges, texts, default)) = &ch.vrange {
+                    cd = cd.vrange(ranges.clone(), texts.clone(), default.clone());
+                }
+                cg_builder = cg_builder.channel(cd);
             }
             channel_names.push(ch.name.clone());
         }

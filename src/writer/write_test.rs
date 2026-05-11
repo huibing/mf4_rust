@@ -2736,4 +2736,328 @@ mod tests {
 
         cleanup_test_file(&path);
     }
+
+    /// Test: Streaming writer with Value-to-Text (vtab) channel
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_streaming_vtab_channel() {
+        use crate::writer::stream_writer::{ChannelGroupDefBuilder, Mf4StreamWriter, StreamingConfig, StreamingDataGroup};
+        use crate::writer::builder::Mf4Metadata;
+        use crate::components::cc::conversion::CcType;
+
+        let path = PathBuf::from("test_streaming_vtab.mf4");
+        cleanup_test_file(&path);
+
+        let keys = vec![1.0_f64, 2.0, 3.0];
+        let texts = vec!["First".to_string(), "Second".to_string(), "Third".to_string()];
+        let default = "Unknown".to_string();
+
+        let cg = ChannelGroupDefBuilder::new()
+            .name("test_group")
+            .master(ChannelDef::new_master("time"))
+            .add_vtab_channel("gear", 0, 8, keys.clone(), texts.clone(), &default)
+            .build()
+            .unwrap();
+
+        let config = StreamingConfig::new();
+        let mut writer = Mf4StreamWriter::with_config(
+            path.clone(),
+            Mf4Metadata::new(),
+            config,
+        ).unwrap();
+        writer.add_data_group(StreamingDataGroup::new(cg).unwrap()).unwrap();
+        writer.finalize_structure().unwrap();
+
+        // Write a few records: gear values 1, 2, 3, 1
+        for &gear in &[1u8, 2, 3, 1] {
+            writer.start_record(0, 0).unwrap();
+            writer.set_channel_value("time", gear as f64 * 0.1).unwrap();
+            writer.set_channel_value("gear", gear as f64).unwrap();
+            writer.flush_record().unwrap();
+        }
+        writer.finalize().unwrap();
+
+        // Read back and verify CC type and data
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        assert!(mf4.get_channel_names().contains(&"gear".to_string()));
+
+        // Check raw data is numeric
+        let raw_data = mf4.get_channel_raw_data("gear");
+        assert!(raw_data.is_some(), "gear raw data should be present");
+
+        // Verify the CC block is Value2Text with the right keys/texts
+        let link = mf4.get_channel_link("gear").expect("gear channel link");
+        let cc_type = link.0.get_conversion().get_cc_type();
+        if let CcType::Value2Text((got_keys, got_texts)) = cc_type {
+            assert_eq!(got_keys.len(), 3);
+            assert!((got_keys[0] - 1.0).abs() < f64::EPSILON);
+            assert!((got_keys[1] - 2.0).abs() < f64::EPSILON);
+            assert!((got_keys[2] - 3.0).abs() < f64::EPSILON);
+            // got_texts has N entries + 1 default; first N match `texts`
+            use crate::components::cc::conversion::TextOrScale;
+            for (i, expected_text) in texts.iter().enumerate() {
+                if let TextOrScale::Text(t) = &got_texts[i] {
+                    assert_eq!(t, expected_text, "text[{}] mismatch", i);
+                } else {
+                    panic!("expected TextOrScale::Text at index {}", i);
+                }
+            }
+            // Default text is the last entry
+            if let TextOrScale::Text(def) = &got_texts[3] {
+                assert_eq!(def, &default);
+            } else {
+                panic!("expected TextOrScale::Text for default entry");
+            }
+        } else {
+            panic!("expected CcType::Value2Text, got {:?}", cc_type);
+        }
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: SimpleWriter with vtab_u8_channel
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_simple_writer_vtab_channel() {
+        use crate::writer::simple_writer::SimpleWriter;
+        use crate::components::cc::conversion::CcType;
+
+        let path = PathBuf::from("test_simple_writer_vtab.mf4");
+        cleanup_test_file(&path);
+
+        let keys = vec![0.0_f64, 1.0, 2.0];
+        let texts = vec!["Off".to_string(), "On".to_string(), "Fault".to_string()];
+
+        let mut writer = SimpleWriter::new(&path)
+            .time_channel("time", "s")
+            .vtab_u8_channel("status", keys.clone(), texts.clone(), "N/A")
+            .build()
+            .expect("build SimpleWriter with vtab");
+
+        for i in 0u8..6 {
+            writer.write_record(&[i as f64 * 0.01, (i % 3) as f64]).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        // Read back
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        assert!(mf4.get_channel_names().contains(&"status".to_string()));
+
+        let link = mf4.get_channel_link("status").expect("status channel link");
+        let cc_type = link.0.get_conversion().get_cc_type();
+        if let CcType::Value2Text((got_keys, got_texts)) = cc_type {
+            assert_eq!(got_keys.len(), 3);
+            use crate::components::cc::conversion::TextOrScale;
+            if let TextOrScale::Text(t) = &got_texts[0] {
+                assert_eq!(t, "Off");
+            } else {
+                panic!("expected TextOrScale::Text for 'Off'");
+            }
+            if let TextOrScale::Text(t) = &got_texts[1] {
+                assert_eq!(t, "On");
+            } else {
+                panic!("expected TextOrScale::Text for 'On'");
+            }
+            // Default is the last entry
+            if let TextOrScale::Text(def) = &got_texts[3] {
+                assert_eq!(def, "N/A");
+            } else {
+                panic!("expected TextOrScale::Text for default 'N/A'");
+            }
+            let _ = got_keys;
+        } else {
+            panic!("expected CcType::Value2Text for status channel");
+        }
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: stream writer with ValueRange2Text (CC type 8) channel
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_streaming_vrange_channel() {
+        use crate::writer::stream_writer::{ChannelGroupDefBuilder, Mf4StreamWriter, StreamingConfig, StreamingDataGroup};
+        use crate::writer::builder::Mf4Metadata;
+        use crate::components::cc::conversion::CcType;
+
+        let path = PathBuf::from("test_streaming_vrange.mf4");
+        cleanup_test_file(&path);
+
+        let ranges = vec![(0.0_f64, 30.0), (30.0, 70.0), (70.0, 100.0)];
+        let texts = vec!["Cold".to_string(), "Warm".to_string(), "Hot".to_string()];
+        let default = "OOB".to_string();
+
+        let cg = ChannelGroupDefBuilder::new()
+            .name("test_group")
+            .master(ChannelDef::new_master("time"))
+            .add_vrange_channel("temp_band", 4, 64, ranges.clone(), texts.clone(), &default)
+            .build()
+            .unwrap();
+
+        let config = StreamingConfig::new();
+        let mut writer = Mf4StreamWriter::with_config(
+            path.clone(),
+            Mf4Metadata::new(),
+            config,
+        ).unwrap();
+        writer.add_data_group(StreamingDataGroup::new(cg).unwrap()).unwrap();
+        writer.finalize_structure().unwrap();
+
+        for (i, &val) in [10.0_f64, 50.0, 85.0, 10.0].iter().enumerate() {
+            writer.start_record(0, 0).unwrap();
+            writer.set_channel_value("time", i as f64 * 0.1).unwrap();
+            writer.set_channel_value("temp_band", val).unwrap();
+            writer.flush_record().unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        assert!(mf4.get_channel_names().contains(&"temp_band".to_string()));
+
+        let link = mf4.get_channel_link("temp_band").expect("temp_band channel link");
+        let cc_type = link.0.get_conversion().get_cc_type();
+        if let CcType::ValueRange2Text((got_vals, got_texts)) = cc_type {
+            // cc_val has 2 values per range
+            assert_eq!(got_vals.len(), 6, "expected 3 ranges × 2 = 6 values");
+            use crate::components::cc::conversion::TextOrScale;
+            if let TextOrScale::Text(t) = &got_texts[0] {
+                assert_eq!(t, "Cold");
+            } else {
+                panic!("expected TextOrScale::Text for 'Cold'");
+            }
+            if let TextOrScale::Text(t) = &got_texts[1] {
+                assert_eq!(t, "Warm");
+            } else {
+                panic!("expected TextOrScale::Text for 'Warm'");
+            }
+            if let TextOrScale::Text(t) = &got_texts[2] {
+                assert_eq!(t, "Hot");
+            } else {
+                panic!("expected TextOrScale::Text for 'Hot'");
+            }
+            if let TextOrScale::Text(def) = &got_texts[3] {
+                assert_eq!(def, "OOB");
+            } else {
+                panic!("expected TextOrScale::Text for default 'OOB'");
+            }
+        } else {
+            panic!("expected CcType::ValueRange2Text, got {:?}", cc_type);
+        }
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: SimpleWriter with vrange_u8_channel
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_simple_writer_vrange_channel() {
+        use crate::writer::simple_writer::SimpleWriter;
+        use crate::components::cc::conversion::CcType;
+
+        let path = PathBuf::from("test_simple_writer_vrange.mf4");
+        cleanup_test_file(&path);
+
+        let ranges = vec![(0.0_f64, 49.0), (50.0, 100.0)];
+        let texts = vec!["Low".to_string(), "High".to_string()];
+
+        let mut writer = SimpleWriter::new(&path)
+            .time_channel("time", "s")
+            .vrange_u8_channel("level", ranges.clone(), texts.clone(), "N/A")
+            .build()
+            .expect("build SimpleWriter with vrange");
+
+        for i in 0u8..4 {
+            writer.write_record(&[i as f64 * 0.1, i as f64 * 25.0]).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+        assert!(mf4.get_channel_names().contains(&"level".to_string()));
+
+        let link = mf4.get_channel_link("level").expect("level channel link");
+        let cc_type = link.0.get_conversion().get_cc_type();
+        if let CcType::ValueRange2Text((got_vals, got_texts)) = cc_type {
+            assert_eq!(got_vals.len(), 4, "expected 2 ranges × 2 = 4 values");
+            use crate::components::cc::conversion::TextOrScale;
+            if let TextOrScale::Text(t) = &got_texts[0] {
+                assert_eq!(t, "Low");
+            } else {
+                panic!("expected TextOrScale::Text for 'Low'");
+            }
+            if let TextOrScale::Text(t) = &got_texts[1] {
+                assert_eq!(t, "High");
+            } else {
+                panic!("expected TextOrScale::Text for 'High'");
+            }
+            if let TextOrScale::Text(def) = &got_texts[2] {
+                assert_eq!(def, "N/A");
+            } else {
+                panic!("expected TextOrScale::Text for default 'N/A'");
+            }
+        } else {
+            panic!("expected CcType::ValueRange2Text for level channel");
+        }
+
+        cleanup_test_file(&path);
+    }
+
+    /// Test: f64 passed to set_channel_value is correctly converted to the target
+    /// integer type (data_type=0, bit_count=8). Before the fix, 1.0f64 was written
+    /// as 8 raw f64 bytes starting at the offset, making the stored u8 value 0x00
+    /// instead of 0x01, so all vtab lookups returned "N/A".
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_vtab_u8_data_values_roundtrip() {
+        use crate::writer::simple_writer::SimpleWriter;
+        use crate::components::cc::conversion::CcType;
+
+        let path = PathBuf::from("test_vtab_data_roundtrip.mf4");
+        cleanup_test_file(&path);
+
+        let keys  = vec![1.0_f64, 2.0, 3.0];
+        let texts = vec!["First".into(), "Second".into(), "Third".into()];
+
+        let mut writer = SimpleWriter::new(&path)
+            .time_channel("time", "s")
+            .vtab_u8_channel("gear", keys.clone(), texts.clone(), "N/A")
+            .build()
+            .expect("build SimpleWriter");
+
+        // Write gear values 1, 2, 3, 1, 2 via f64 — the f64→u8 conversion must
+        // store the integer value (1, 2, 3 …), not the f64 raw bytes.
+        let expected_gear: Vec<f64> = vec![1.0, 2.0, 3.0, 1.0, 2.0];
+        for (i, &g) in expected_gear.iter().enumerate() {
+            writer.write_record(&[i as f64 * 0.1, g]).unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+
+        // Verify the CC conversion is applied correctly — the reader returns text labels,
+        // not raw bytes, confirming the f64→u8 encoding was correct.
+        let gear_data = mf4.get_channel_data("gear")
+            .expect("get gear channel data");
+        use crate::DataValue;
+        if let DataValue::MIXED(vals) = gear_data {
+            assert_eq!(vals.len(), expected_gear.len(), "record count mismatch");
+            let expected_texts = ["First", "Second", "Third", "First", "Second"];
+            for (i, (val, expected_text)) in vals.iter().zip(expected_texts.iter()).enumerate() {
+                use crate::data_serde::StringOrReal;
+                if let StringOrReal::String(s) = val {
+                    assert_eq!(s, expected_text, "record {i}: text mismatch");
+                } else {
+                    panic!("record {i}: expected StringOrReal::String, got {val:?}");
+                }
+            }
+        } else {
+            panic!("expected DataValue::MIXED for gear channel (CC applied), got {:?}", gear_data);
+        }
+
+        // Also verify CC structure is still correct
+        let link = mf4.get_channel_link("gear").expect("gear link");
+        let cc_type = link.0.get_conversion().get_cc_type();
+        assert!(matches!(cc_type, CcType::Value2Text(_)), "expected Value2Text CC");
+
+        cleanup_test_file(&path);
+    }
 }
