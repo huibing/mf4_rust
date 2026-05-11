@@ -3139,4 +3139,51 @@ mod tests {
 
         cleanup_test_file(&path);
     }
+
+    /// Test: get_channel_text_data returns Vec<String> for VTAB, VRANGE, and STRINGS channels
+    #[cfg(feature = "streaming")]
+    #[test]
+    fn test_get_channel_text_data() {
+        use crate::writer::simple_writer::SimpleWriter;
+        use crate::parser::Mf4Wrapper;
+
+        let path = PathBuf::from("test_get_channel_text_data.mf4");
+        cleanup_test_file(&path);
+
+        // Write a file with a vtab channel (CC type 7) via SimpleWriter
+        let mut writer = SimpleWriter::new(&path)
+            .time_channel("time", "s")
+            .vtab_u8_channel(
+                "state",
+                vec![0.0, 1.0, 2.0],
+                vec!["Idle".into(), "Running".into(), "Error".into()],
+                "Unknown",
+            )
+            .build()
+            .expect("build writer");
+
+        for (t, v) in [(0.0f64, 0.0f64), (1.0, 1.0), (2.0, 2.0), (3.0, 1.0), (4.0, 3.0)] {
+            writer.write_record(&[t, v]).expect("write record");
+        }
+        writer.finalize().expect("finalize");
+
+        let mf4 = Mf4Wrapper::new::<fn(f64)>(path.clone(), None).unwrap();
+
+        // get_channel_text_data should resolve CC labels
+        let texts = mf4.get_channel_text_data("state").expect("text data");
+        assert_eq!(texts.len(), 5);
+        assert_eq!(texts[0], "Idle");
+        assert_eq!(texts[1], "Running");
+        assert_eq!(texts[2], "Error");
+        assert_eq!(texts[3], "Running");
+        assert_eq!(texts[4], "Unknown");   // value 3 has no key → default
+
+        // is_text() on MIXED should be true, on raw integer should be false
+        let raw_state = mf4.get_channel_raw_data("state").unwrap();
+        assert!(!raw_state.is_text(), "UINT8 raw is not text");
+        let mixed = mf4.get_channel_data("state").unwrap();
+        assert!(mixed.is_text(), "MIXED (after CC) is text");
+
+        cleanup_test_file(&path);
+    }
 }

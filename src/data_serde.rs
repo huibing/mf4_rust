@@ -329,6 +329,39 @@ impl DataValue {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Returns true if the data represents textual values.
+    ///
+    /// Returns `true` for `CHAR`, `STRINGS`, and `MIXED` variants.
+    /// `MIXED` arises from value-to-text (CC type 7) or value-range-to-text (CC type 8)
+    /// conversions, where each element may be either a resolved text label or a raw
+    /// numeric fallback.
+    pub fn is_text(&self) -> bool {
+        matches!(self, DataValue::CHAR(_) | DataValue::STRINGS(_) | DataValue::MIXED(_))
+    }
+
+    /// Converts textual data to a `Vec<String>`, consuming `self`.
+    ///
+    /// - `CHAR(s)` → `Some(vec![s])`
+    /// - `STRINGS(v)` → `Some(v)`
+    /// - `MIXED(v)` → `Some(…)`, where each `StringOrReal::String(s)` becomes `s`
+    ///   and each `StringOrReal::Real(f)` is formatted as its decimal representation.
+    /// - All other variants → `None`.
+    pub fn into_text(self) -> Option<Vec<String>> {
+        match self {
+            DataValue::CHAR(s) => Some(vec![s]),
+            DataValue::STRINGS(v) => Some(v),
+            DataValue::MIXED(v) => Some(
+                v.into_iter()
+                    .map(|sor| match sor {
+                        StringOrReal::String(s) => s,
+                        StringOrReal::Real(f) => format!("{}", f),
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
 }
 
 macro_rules! fmt_vec_branch {

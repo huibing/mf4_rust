@@ -821,6 +821,20 @@ pub mod parser {
             } else { None }
         }
 
+        /// Returns the text values for a channel as `Vec<String>`, or `None` if the
+        /// channel is not textual.
+        ///
+        /// Works for:
+        /// - Fixed-length string channels (`cn_data_type` 6/7/8/9)
+        /// - Value-to-Text channels (CC type 7)
+        /// - Value-Range-to-Text channels (CC type 8)
+        ///
+        /// For CC-converted channels where a sample did not match any key or range,
+        /// the raw numeric value is formatted as a decimal string.
+        pub fn get_channel_text_data(&self, channel_name: &str) -> Option<Vec<String>> {
+            self.get_channel_data(channel_name)?.into_text()
+        }
+
         pub fn get_channel_master_data(&self, channel_name: &str) -> Option<DataValue> {
             let (dg_index, cg_index, cn_index) = self.channel_cache.get(channel_name)?;
             let mut master_cache = self.master_cache.borrow_mut();
